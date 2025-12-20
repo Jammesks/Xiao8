@@ -5519,6 +5519,12 @@ function viewItemDetails(itemId) {
                 }
             }
             
+            // 手动触发change事件以加载Live2D模型
+            // 这是必要的，因为程序化设置value不会触发change事件
+            if (modelSelect.value) {
+                modelSelect.dispatchEvent(new Event('change'));
+            }
+            
             // 加载音色
             let voiceValue = '';
             // 检查是否有voice对象（新格式）
@@ -6068,6 +6074,16 @@ function viewItemDetails(itemId) {
                 // 确保live2dPreviewManager已初始化
                 if (!live2dPreviewManager) {
                     await initLive2DPreview();
+                }
+                
+                // 强制resize PIXI应用，确保canvas尺寸正确
+                // 这是必要的，因为当容器最初是隐藏的(display:none)时，PIXI的尺寸会是0
+                if (live2dPreviewManager && live2dPreviewManager.pixi_app) {
+                    const container = document.getElementById('live2d-preview-content');
+                    if (container && container.clientWidth > 0 && container.clientHeight > 0) {
+                        live2dPreviewManager.pixi_app.renderer.resize(container.clientWidth, container.clientHeight);
+                        console.log('PIXI canvas resized to:', container.clientWidth, 'x', container.clientHeight);
+                    }
                 }
                 
                 // 如果已经有模型加载，先移除它

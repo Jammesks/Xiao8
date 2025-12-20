@@ -788,6 +788,13 @@ class OmniRealtimeClient:
             finally:
                 self._silence_check_task = None
         
+        # 保存 debug 音频（RNNoise 处理前后的对比音频）
+        if self._audio_processor is not None:
+            try:
+                self._audio_processor.save_debug_audio()
+            except Exception as e:
+                logger.error(f"Error saving debug audio: {e}")
+        
         if self.ws:
             try:
                 # 尝试关闭websocket连接

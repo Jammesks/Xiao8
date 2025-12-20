@@ -491,7 +491,7 @@ def _sync_preload_modules():
         from utils.config_manager import get_config_manager
         config_manager = get_config_manager()
         # 预初始化翻译服务实例（触发 LLM 客户端创建等）
-        translation_service = get_translation_service(config_manager)
+        _ = get_translation_service(config_manager)
         logger.debug("✅ 翻译服务预加载完成")
     except Exception as e:
         logger.debug(f"⚠️ 翻译服务预加载失败（不影响使用）: {e}")
@@ -519,17 +519,8 @@ def _sync_preload_modules():
 @app.on_event("startup")
 async def on_startup():
     """服务器启动时执行的初始化操作"""
-    # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
-    try:
-        from utils.language_utils import initialize_global_language
-        global_lang = initialize_global_language()
-        logger.info(f"全局语言初始化完成: {global_lang}")
-    except Exception as e:
-        logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
-    global steamworks, _preload_task
-    
-    # 只在主进程中初始化 Steamworks
     if _IS_MAIN_PROCESS:
+        global steamworks, _preload_task
         logger.info("正在初始化 Steamworks...")
         steamworks = initialize_steamworks()
         
@@ -545,6 +536,14 @@ async def on_startup():
         _preload_task = asyncio.create_task(_background_preload())
         await _init_and_mount_workshop()
         logger.info("Startup 初始化完成，后台正在预加载音频模块...")
+
+        # 初始化全局语言变量（优先级：Steam设置 > 系统设置）
+        try:
+            from utils.language_utils import initialize_global_language
+            global_lang = initialize_global_language()
+            logger.info(f"全局语言初始化完成: {global_lang}")
+        except Exception as e:
+            logger.warning(f"全局语言初始化失败: {e}，将使用默认值")
 
 # 使用 FastAPI 的 app.state 来管理启动配置
 def get_start_config():
