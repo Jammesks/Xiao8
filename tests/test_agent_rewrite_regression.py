@@ -566,6 +566,151 @@ def test_universal_tutorial_manager_normalizes_api_key_handoff_and_resume_scene_
         assert expected in source
 
 
+def test_character_card_manager_tutorial_uses_current_page_and_targets():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    steps_start = source.index("    getCharaManagerSteps() {")
+    steps_end = source.index("getSettingsSteps()", steps_start)
+    steps_source = source[steps_start:steps_end]
+    wait_start = source.index("waitForCatgirlCards(")
+    wait_end = source.index("getTargetCatgirlBlock()", wait_start)
+    wait_source = source[wait_start:wait_end]
+
+    for expected in (
+        "path.includes('character_card_manager') || path.includes('chara_manager')",
+    ):
+        assert expected in source
+
+    for expected in (
+        "element: '#master-profile-section'",
+        "element: '#character-cards-content'",
+        "element: '.chara-add-btn'",
+        "element: '.chara-card-item:first-child, .chara-list-item:first-child'",
+        "element: '.chara-card-item:first-child .card-action-btn.switch-btn, .chara-list-item:first-child .list-action-btn.switch-btn'",
+    ):
+        assert expected in steps_source
+
+    for expected in (
+        "document.getElementById('chara-cards-container')",
+        "document.querySelector('.chara-card-item, .chara-list-item')",
+    ):
+        assert expected in wait_source
+
+    for obsolete in (
+        "element: '#master-section'",
+        "element: '#catgirl-section'",
+    ):
+        assert obsolete not in steps_source
+
+    for obsolete in (
+        "document.getElementById('catgirl-list')",
+        "document.querySelector('.catgirl-block:first-child')",
+    ):
+        assert obsolete not in wait_source
+
+
+def test_character_card_manager_tutorial_prepare_helpers_use_current_card_selectors():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    prepare_start = source.index("async prepareCharaManagerForTutorial()")
+    prepare_end = source.index("cleanupCharaManagerTutorialIds()", prepare_start)
+    prepare_source = source[prepare_start:prepare_end]
+    ensure_start = source.index("async _ensureCharaManagerExpanded()")
+    ensure_end = source.index("createHelpButton()", ensure_start)
+    ensure_source = source[ensure_start:ensure_end]
+    step_change_start = source.index("async onStepChange()")
+    step_change_end = source.index("onTutorialEnd()", step_change_start)
+    step_change_source = source[step_change_start:step_change_end]
+
+    for helper_source in (prepare_source, ensure_source):
+        assert ".chara-card-item" in helper_source
+        assert ".chara-list-item" in helper_source
+        assert ".catgirl-block" not in helper_source
+        assert ".catgirl-details" not in helper_source
+        assert ".catgirl-expand" not in helper_source
+
+    assert ".chara-card-item:first-child, .chara-list-item:first-child" in ensure_source
+    assert ".catgirl-block:first-child" not in step_change_source
+
+
+def test_universal_tutorial_manager_blocks_user_scroll_during_tutorial():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "_tutorialScrollBlockOptions = { capture: true, passive: false }",
+        "blockTutorialScrollEvent(event)",
+        "event.preventDefault();",
+        "window.addEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+        "window.addEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+        "window.removeEventListener('wheel', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+        "window.removeEventListener('touchmove', this._tutorialScrollBlockHandler, this._tutorialScrollBlockOptions)",
+    ):
+        assert expected in source
+
+
+def test_universal_tutorial_manager_blocks_page_clicks_during_tutorial():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "blockTutorialPointerEvent(event)",
+        "isTutorialControlEventTarget(target)",
+        "if (this.currentPage !== 'chara_manager') return;",
+        "target.closest('.driver-popover, #neko-tutorial-skip-btn')",
+        "event.stopImmediatePropagation();",
+        "window.addEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.addEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.addEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.addEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('pointerdown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('mousedown', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('click', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+        "window.removeEventListener('touchstart', this._tutorialPointerBlockHandler, this._tutorialPointerBlockOptions)",
+    ):
+        assert expected in source
+
+
+def test_universal_tutorial_manager_limits_input_blockers_to_chara_manager_page():
+    source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
+    scroll_start = source.index("blockTutorialScrollEvent(event)")
+    scroll_end = source.index("blockTutorialScroll()", scroll_start)
+    scroll_source = source[scroll_start:scroll_end]
+    pointer_start = source.index("blockTutorialPointerEvent(event)")
+    pointer_end = source.index("blockTutorialPointerEvents()", pointer_start)
+    pointer_source = source[pointer_start:pointer_end]
+
+    assert "if (this.currentPage !== 'chara_manager') return;" in scroll_source
+    assert "if (this.currentPage !== 'chara_manager') return;" in pointer_source
+
+
+def test_character_card_manager_master_profile_arrow_uses_bubble_style():
+    template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
+    css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
+
+    for expected in (
+        "class=\"master-profile-arrow-bubble\"",
+        "class=\"master-profile-arrow-symbol\"",
+    ):
+        assert expected in template_source
+
+    for expected in (
+        ".master-profile-arrow-bubble",
+        ".master-profile-arrow-symbol",
+        ".master-profile-header.open .master-profile-arrow-bubble",
+    ):
+        assert expected in css_source
+
+
+def test_character_card_manager_cloudsave_button_uses_icon_badge():
+    template_source = Path("templates/character_card_manager.html").read_text(encoding="utf-8")
+    css_source = Path("static/css/character_card_manager.css").read_text(encoding="utf-8")
+
+    assert "class=\"sidebar-cloudsave-icon\"" in template_source
+    for expected in (
+        ".sidebar-cloudsave-icon",
+        ".sidebar-cloudsave-btn:focus-visible",
+        "[data-theme=\"dark\"] .sidebar-cloudsave-icon",
+    ):
+        assert expected in css_source
+
+
 def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     tutorial_source = Path("static/universal-tutorial-manager.js").read_text(encoding="utf-8")
     interpage_source = Path("static/app-interpage.js").read_text(encoding="utf-8")
