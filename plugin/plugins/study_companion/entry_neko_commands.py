@@ -20,6 +20,21 @@ _NEKO_COMMAND_HANDLERS: dict[str, str] = {
     "change_mode": "_handle_neko_change_mode",
 }
 
+_INTERRUPT_COMMANDS: frozenset[str] = frozenset(
+    {
+        "explain_current",
+        "start_review",
+        "change_mode",
+    }
+)
+
+_QUEUE_COMMANDS: frozenset[str] = frozenset(
+    {
+        "quiz_me",
+        "show_progress",
+    }
+)
+
 
 def _fmt_explain_current_for_neko(*, text: str, explanation: str) -> str:
     return f"[伴学·概念解释]\n原文: {text}\n\n{explanation}"
@@ -34,7 +49,10 @@ def _fmt_progress_for_neko(
     *, items: list[dict[str, Any]], due_count: int, session_questions: int
 ) -> str:
     if not items:
-        return "[伴学·学习进度] 暂无掌握度数据。"
+        lines = ["[伴学·学习进度] 暂无掌握度数据。"]
+        if due_count > 0:
+            lines.append(f"待复习卡片: {due_count} 张")
+        return "\n".join(lines)
     lines = [f"[伴学·学习进度] 本次已答 {session_questions} 题"]
     for item in items:
         lines.append(f"  {item['topic']}: {float(item['mastery']):.0%}")
@@ -145,9 +163,7 @@ class _NekoCommandsMixin:
         self._neko_command_watcher = watcher
         return True
 
-    def _dispatch_neko_command_messages(
-        self, delta: Any, loop: asyncio.AbstractEventLoop
-    ) -> None:
+    def _dispatch_neko_command_messages(self, delta: Any, loop: asyncio.AbstractEventLoop) -> None:
         for record in getattr(delta, "added", ()) or ():
             payload = self._extract_neko_command_payload(record)
             if payload is None:
@@ -170,9 +186,7 @@ class _NekoCommandsMixin:
         raw = getattr(record, "raw", None)
         candidates: list[tuple[Any, Any]] = []
         if isinstance(metadata, dict):
-            candidates.append(
-                (metadata.get("topic") or description, metadata.get("payload"))
-            )
+            candidates.append((metadata.get("topic") or description, metadata.get("payload")))
         if isinstance(raw, dict):
             raw_metadata = raw.get("metadata")
             if isinstance(raw_metadata, dict):
@@ -267,13 +281,30 @@ class _NekoCommandsMixin:
             self.logger.error("_on_neko_command handler not found: {}", handler_name)
             return Err(SdkError(f"handler not found: {handler_name}"))
 
-        try:
-            await handler(payload)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self.logger.exception("_on_neko_command handler failed: {}", cmd)
-            return Err(SdkError(f"handler failed: {cmd}: {exc}"))
+        if cmd in _INTERRUPT_COMMANDS:
+            current = self._interruptible_task
+            self._interruptible_task = None
+            if current is not None and not current.done():
+                current.cancel()
+
+            async def _run_interruptible() -> None:
+                try:
+                    await handler(payload)
+                except asyncio.CancelledError:
+                    pass
+
+            self._interruptible_task = asyncio.create_task(_run_interruptible())
+            self._interruptible_task.add_done_callback(self._on_command_task_done)
+            return Ok(None)
+
+        if cmd not in _QUEUE_COMMANDS:
+            self.logger.warning("_on_neko_command unclassified command: {}", cmd)
+            return Err(SdkError(f"unclassified command: {cmd}"))
+
+        if self._command_worker_task is None or self._command_worker_task.done():
+            self.logger.warning("_on_neko_command: worker not running, restarting")
+            self._start_command_worker()
+        await self._command_queue.put((cmd, payload))
         return Ok(None)
 
     async def _handle_neko_explain_current(self, payload: dict[str, Any]) -> None:
@@ -584,4 +615,9 @@ class _NekoCommandsMixin:
             )
 
 
-__all__ = ["_NekoCommandsMixin"]
+__all__ = [
+    "_INTERRUPT_COMMANDS",
+    "_NEKO_COMMAND_HANDLERS",
+    "_NekoCommandsMixin",
+    "_QUEUE_COMMANDS",
+]

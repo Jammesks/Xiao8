@@ -11,6 +11,7 @@ from plugin.plugins.study_companion.constants import (
     MODE_COMPANION,
     MODE_INTERACTIVE,
 )
+from plugin.plugins.study_companion.entry_common import _detect_mastery_threshold_crossed
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
 from plugin.sdk.plugin import Err, Ok
 from plugin.sdk.shared.transport.message_plane import MessagePlaneTransport
@@ -265,6 +266,11 @@ def _seed_mastery(plugin: StudyCompanionPlugin) -> None:
     )
 
 
+def test_detect_mastery_threshold_crossed_returns_highest_crossed() -> None:
+    assert _detect_mastery_threshold_crossed(0.2, 0.9) == "0.85"
+    assert _detect_mastery_threshold_crossed(0.9, 0.2) == "0.85"
+
+
 @pytest.mark.asyncio
 async def test_neko_explain_current_pushes_with_ocr_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -276,8 +282,8 @@ async def test_neko_explain_current_pushes_with_ocr_text(
         result = await plugin._on_neko_command({"command": "explain_current"})
 
         assert isinstance(result, Ok)
-        assert any("[伴学·概念解释]" in text for text in _texts(ctx))
-        assert any("Derivative rules" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "[伴学·概念解释]")
+        await _wait_for_text(ctx, "Derivative rules")
         assert _last_push(ctx)["visibility"] == []
     finally:
         await plugin.shutdown()
@@ -293,7 +299,7 @@ async def test_neko_explain_current_no_ocr_pushes_unavailable(
         result = await plugin._on_neko_command({"command": "explain_current"})
 
         assert isinstance(result, Ok)
-        assert any("当前屏幕无可识别的文字内容" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "当前屏幕无可识别的文字内容")
         assert _last_push(ctx)["visibility"] == []
     finally:
         await plugin.shutdown()
@@ -311,8 +317,8 @@ async def test_neko_quiz_me_with_topic_generates_question(
         )
 
         assert isinstance(result, Ok)
-        assert any("[伴学·随堂测验]" in text for text in _texts(ctx))
-        assert any("What is derivatives?" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "[伴学·随堂测验]")
+        await _wait_for_text(ctx, "What is derivatives?")
         assert _last_push(ctx)["visibility"] == []
     finally:
         await plugin.shutdown()
@@ -331,8 +337,9 @@ async def test_neko_quiz_me_without_input_uses_cached_ocr(
         result = await plugin._on_neko_command({"command": "quiz_me"})
 
         assert isinstance(result, Ok)
+        await _wait_until(lambda: bool(agent.question_inputs))
         assert agent.question_inputs[0][0] == "Cached Newton law"
-        assert any("[伴学·随堂测验]" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "[伴学·随堂测验]")
         assert _last_push(ctx)["visibility"] == []
     finally:
         await plugin.shutdown()
@@ -347,7 +354,7 @@ async def test_neko_quiz_me_no_input_pushes_prompt(
         result = await plugin._on_neko_command({"command": "quiz_me"})
 
         assert isinstance(result, Ok)
-        assert any("请指定题目主题" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "请指定题目主题")
         assert _last_push(ctx)["visibility"] == []
     finally:
         await plugin.shutdown()
@@ -366,8 +373,8 @@ async def test_neko_show_progress_returns_mastery_overview(
         result = await plugin._on_neko_command({"command": "show_progress"})
 
         assert isinstance(result, Ok)
-        assert any("[伴学·学习进度]" in text for text in _texts(ctx))
-        assert any("Derivatives" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "[伴学·学习进度]")
+        await _wait_for_text(ctx, "Derivatives")
         assert ctx.pushed_messages[-1]["ai_behavior"] == "read"
     finally:
         await plugin.shutdown()
@@ -386,7 +393,7 @@ async def test_neko_show_progress_filtered_by_topic(
         )
 
         assert isinstance(result, Ok)
-        assert any("Derivatives" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "Derivatives")
     finally:
         await plugin.shutdown()
 
@@ -409,7 +416,7 @@ async def test_neko_show_progress_keeps_zero_mastery_topic(
         )
 
         assert isinstance(result, Ok)
-        assert any("Limits: 0%" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "Limits: 0%")
         assert not any("暂无掌握度数据" in text for text in _texts(ctx))
     finally:
         await plugin.shutdown()
@@ -424,7 +431,27 @@ async def test_neko_show_progress_empty_when_no_data(
         result = await plugin._on_neko_command({"command": "show_progress"})
 
         assert isinstance(result, Ok)
-        assert any("暂无掌握度数据" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "暂无掌握度数据")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_neko_show_progress_empty_mastery_includes_due_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _MemoryDeckStore:
+        def count_due_reviews(self) -> int:
+            return 7
+
+    plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
+    plugin._memory_deck_store = _MemoryDeckStore()  # type: ignore[assignment]
+    try:
+        result = await plugin._on_neko_command({"command": "show_progress"})
+
+        assert isinstance(result, Ok)
+        text = await _wait_for_text(ctx, "待复习卡片: 7 张")
+        assert "暂无掌握度数据" in text
     finally:
         await plugin.shutdown()
 
@@ -447,7 +474,7 @@ async def test_neko_start_review_returns_due_items(
         result = await plugin._on_neko_command({"command": "start_review"})
 
         assert isinstance(result, Ok)
-        assert any("[伴学·复习提醒]" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "[伴学·复习提醒]")
         assert ctx.pushed_messages[-1]["priority"] == 3
         assert _last_push(ctx)["visibility"] == []
     finally:
@@ -474,8 +501,8 @@ async def test_neko_start_review_reports_total_due_count(
         result = await plugin._on_neko_command({"command": "start_review"})
 
         assert isinstance(result, Ok)
-        assert any("25 张卡片待复习" in text for text in _texts(ctx))
-        assert any("先展示前 20 张" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "25 张卡片待复习")
+        await _wait_for_text(ctx, "先展示前 20 张")
     finally:
         await plugin.shutdown()
 
@@ -489,7 +516,7 @@ async def test_neko_start_review_no_due_pushes_congrats(
         result = await plugin._on_neko_command({"command": "start_review"})
 
         assert isinstance(result, Ok)
-        assert any("当前没有到期卡片" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "当前没有到期卡片")
         assert _last_push(ctx)["visibility"] == []
     finally:
         await plugin.shutdown()
@@ -506,15 +533,16 @@ async def test_neko_change_mode_switches_and_confirms(
         )
 
         assert isinstance(result, Ok)
+        await _wait_until(lambda: plugin._state.active_mode == MODE_INTERACTIVE)
         assert plugin._state.active_mode == MODE_INTERACTIVE
-        assert any("[伴学·模式切换]" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "[伴学·模式切换]")
         assert ctx.pushed_messages[-1]["ai_behavior"] == "read"
     finally:
         await plugin.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_neko_change_mode_propagates_set_mode_failure(
+async def test_neko_change_mode_pushes_set_mode_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
@@ -528,8 +556,8 @@ async def test_neko_change_mode_propagates_set_mode_failure(
             {"command": "change_mode", "mode": MODE_INTERACTIVE}
         )
 
-        assert isinstance(result, Err)
-        assert any("模式切换失败" in text for text in _texts(ctx))
+        assert isinstance(result, Ok)
+        await _wait_for_text(ctx, "模式切换失败")
     finally:
         await plugin.shutdown()
 
@@ -545,7 +573,7 @@ async def test_neko_change_mode_rejects_invalid_mode(
         )
 
         assert isinstance(result, Ok)
-        assert any("不支持的模式" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "不支持的模式")
     finally:
         await plugin.shutdown()
 
@@ -730,9 +758,12 @@ async def test_handler_exception_is_logged_not_raised(
     try:
         result = await plugin._on_neko_command({"command": "quiz_me", "topic": "math"})
 
-        assert isinstance(result, Err)
-        assert any(
-            "handler failed" in str(args[0]) for args, _ in ctx.logger.exceptions
+        assert isinstance(result, Ok)
+        await _wait_until(
+            lambda: any(
+                "command task failed" in str(args[0])
+                for args, _ in ctx.logger.exceptions
+            )
         )
     finally:
         await plugin.shutdown()
@@ -773,7 +804,7 @@ async def test_neko_command_roundtrip_explain(
         )
 
         assert isinstance(result, Ok)
-        assert any("Limits and continuity" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "Limits and continuity")
     finally:
         await plugin.shutdown()
 
@@ -790,7 +821,7 @@ async def test_neko_command_roundtrip_quiz(
         )
 
         assert isinstance(result, Ok)
-        assert any("What is limits?" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "What is limits?")
     finally:
         await plugin.shutdown()
 
@@ -808,6 +839,432 @@ async def test_neko_command_roundtrip_progress(
         )
 
         assert isinstance(result, Ok)
-        assert any("[伴学·学习进度]" in text for text in _texts(ctx))
+        await _wait_for_text(ctx, "[伴学·学习进度]")
     finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_command_cancels_current_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+    second_started = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def _first(_payload: dict[str, object]) -> None:
+        first_started.set()
+        try:
+            await release_first.wait()
+        except asyncio.CancelledError:
+            first_cancelled.set()
+            raise
+
+    async def _second(_payload: dict[str, object]) -> None:
+        second_started.set()
+
+    plugin._handle_neko_explain_current = _first  # type: ignore[method-assign]
+    plugin._handle_neko_start_review = _second  # type: ignore[method-assign]
+    try:
+        result = await plugin._on_neko_command({"command": "explain_current"})
+        assert isinstance(result, Ok)
+        await _wait_until(first_started.is_set)
+
+        result = await plugin._on_neko_command({"command": "start_review"})
+
+        assert isinstance(result, Ok)
+        await _wait_until(first_cancelled.is_set)
+        await _wait_until(second_started.is_set)
+    finally:
+        release_first.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_command_bypasses_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    queue_started = asyncio.Event()
+    interrupt_started = asyncio.Event()
+    release_queue = asyncio.Event()
+
+    async def _queue(_payload: dict[str, object]) -> None:
+        queue_started.set()
+        await release_queue.wait()
+
+    async def _interrupt(_payload: dict[str, object]) -> None:
+        interrupt_started.set()
+
+    plugin._handle_neko_quiz_me = _queue  # type: ignore[method-assign]
+    plugin._handle_neko_start_review = _interrupt  # type: ignore[method-assign]
+    try:
+        result = await plugin._on_neko_command({"command": "quiz_me"})
+        assert isinstance(result, Ok)
+        await _wait_until(queue_started.is_set)
+
+        result = await plugin._on_neko_command({"command": "start_review"})
+
+        assert isinstance(result, Ok)
+        await _wait_until(interrupt_started.is_set)
+        assert not release_queue.is_set()
+    finally:
+        release_queue.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_during_queue_command_cancels_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    queue_started = asyncio.Event()
+    queue_cancelled = asyncio.Event()
+    interrupt_started = asyncio.Event()
+    release_queue = asyncio.Event()
+
+    async def _queue(_payload: dict[str, object]) -> None:
+        queue_started.set()
+        try:
+            await release_queue.wait()
+        except asyncio.CancelledError:
+            queue_cancelled.set()
+            raise
+
+    async def _interrupt(_payload: dict[str, object]) -> None:
+        interrupt_started.set()
+
+    plugin._handle_neko_quiz_me = _queue  # type: ignore[method-assign]
+    plugin._handle_neko_change_mode = _interrupt  # type: ignore[method-assign]
+    try:
+        result = await plugin._on_neko_command({"command": "quiz_me"})
+        assert isinstance(result, Ok)
+        await _wait_until(queue_started.is_set)
+
+        result = await plugin._on_neko_command(
+            {"command": "change_mode", "mode": MODE_INTERACTIVE}
+        )
+
+        assert isinstance(result, Ok)
+        await _wait_until(queue_cancelled.is_set)
+        await _wait_until(interrupt_started.is_set)
+    finally:
+        release_queue.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_command_does_not_cancel_previous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    interrupt_started = asyncio.Event()
+    interrupt_cancelled = asyncio.Event()
+    queue_started = asyncio.Event()
+    release_interrupt = asyncio.Event()
+
+    async def _interrupt(_payload: dict[str, object]) -> None:
+        interrupt_started.set()
+        try:
+            await release_interrupt.wait()
+        except asyncio.CancelledError:
+            interrupt_cancelled.set()
+            raise
+
+    async def _queue(_payload: dict[str, object]) -> None:
+        queue_started.set()
+
+    plugin._handle_neko_explain_current = _interrupt  # type: ignore[method-assign]
+    plugin._handle_neko_quiz_me = _queue  # type: ignore[method-assign]
+    try:
+        result = await plugin._on_neko_command({"command": "explain_current"})
+        assert isinstance(result, Ok)
+        await _wait_until(interrupt_started.is_set)
+
+        result = await plugin._on_neko_command({"command": "quiz_me"})
+        assert isinstance(result, Ok)
+        await _wait_until(plugin._command_queue.empty)
+        assert not interrupt_cancelled.is_set()
+        assert not queue_started.is_set()
+
+        release_interrupt.set()
+        await _wait_until(queue_started.is_set)
+    finally:
+        release_interrupt.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_queue_commands_execute_sequentially(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    async def _quiz(_payload: dict[str, object]) -> None:
+        calls.append("quiz")
+
+    async def _progress(_payload: dict[str, object]) -> None:
+        calls.append("progress")
+
+    plugin._handle_neko_quiz_me = _quiz  # type: ignore[method-assign]
+    plugin._handle_neko_show_progress = _progress  # type: ignore[method-assign]
+    try:
+        assert isinstance(await plugin._on_neko_command({"command": "quiz_me"}), Ok)
+        assert isinstance(
+            await plugin._on_neko_command({"command": "show_progress"}), Ok
+        )
+
+        await _wait_until(lambda: calls == ["quiz", "progress"])
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_two_interrupt_commands_sequentially(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+    second_started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def _interrupt(_payload: dict[str, object]) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+        else:
+            second_started.set()
+
+    plugin._handle_neko_explain_current = _interrupt  # type: ignore[method-assign]
+    try:
+        assert isinstance(
+            await plugin._on_neko_command({"command": "explain_current"}), Ok
+        )
+        await _wait_until(first_started.is_set)
+        assert isinstance(
+            await plugin._on_neko_command({"command": "explain_current"}), Ok
+        )
+
+        await _wait_until(first_cancelled.is_set)
+        await _wait_until(second_started.is_set)
+    finally:
+        release.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_worker_first_then_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    queue_started = asyncio.Event()
+    queue_cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _queue(_payload: dict[str, object]) -> None:
+        queue_started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            queue_cancelled.set()
+            raise
+
+    plugin._handle_neko_quiz_me = _queue  # type: ignore[method-assign]
+    result = await plugin._on_neko_command({"command": "quiz_me"})
+    assert isinstance(result, Ok)
+    await _wait_until(queue_started.is_set)
+
+    await plugin.shutdown()
+
+    assert queue_cancelled.is_set()
+    assert plugin._command_worker_task is None
+    assert plugin._interruptible_task is None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_no_orphan_tasks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _queue(_payload: dict[str, object]) -> None:
+        started.set()
+        await release.wait()
+
+    plugin._handle_neko_quiz_me = _queue  # type: ignore[method-assign]
+    assert isinstance(await plugin._on_neko_command({"command": "quiz_me"}), Ok)
+    assert isinstance(await plugin._on_neko_command({"command": "show_progress"}), Ok)
+    await _wait_until(started.is_set)
+
+    await plugin.shutdown()
+
+    assert plugin._command_worker_task is None
+    assert plugin._interruptible_task is None
+    assert plugin._command_queue.empty()
+    release.set()
+
+
+@pytest.mark.asyncio
+async def test_worker_restarts_after_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    original_worker = plugin._run_command_worker
+    await plugin._cancel_command_worker()
+
+    async def _crash() -> None:
+        raise RuntimeError("worker crashed")
+
+    plugin._run_command_worker = _crash  # type: ignore[method-assign]
+    plugin._start_command_worker()
+    await _wait_until(
+        lambda: plugin._command_worker_task is None
+        and plugin._worker_crash_count == 1
+    )
+
+    plugin._run_command_worker = original_worker  # type: ignore[method-assign]
+    result = await plugin._on_neko_command({"command": "show_progress"})
+
+    assert isinstance(result, Ok)
+    await _wait_until(
+        lambda: plugin._command_worker_task is not None
+        and not plugin._command_worker_task.done()
+    )
+    await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_worker_poison_protection_stops_after_3_crashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    await plugin._cancel_command_worker()
+
+    async def _crash() -> None:
+        raise RuntimeError("worker crashed")
+
+    plugin._run_command_worker = _crash  # type: ignore[method-assign]
+    try:
+        for expected_count in (1, 2, 3):
+            plugin._start_command_worker()
+            await _wait_until(
+                lambda: plugin._command_worker_task is None
+                and plugin._worker_crash_count == expected_count
+            )
+
+        result = await plugin._on_neko_command({"command": "show_progress"})
+
+        assert isinstance(result, Ok)
+        await _wait_until(lambda: plugin._command_queue.qsize() == 1)
+        assert plugin._command_worker_task is None
+        assert plugin._command_queue.qsize() == 1
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_command_task_done_callback_clears_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    started = asyncio.Event()
+
+    async def _interrupt(_payload: dict[str, object]) -> None:
+        started.set()
+
+    plugin._handle_neko_start_review = _interrupt  # type: ignore[method-assign]
+    try:
+        result = await plugin._on_neko_command({"command": "start_review"})
+
+        assert isinstance(result, Ok)
+        await _wait_until(started.is_set)
+        await _wait_until(lambda: plugin._interruptible_task is None)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_not_logged_as_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
+    plugin.logger = ctx.logger
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+    second_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _first(_payload: dict[str, object]) -> None:
+        first_started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            first_cancelled.set()
+            raise
+
+    async def _second(_payload: dict[str, object]) -> None:
+        second_started.set()
+
+    plugin._handle_neko_explain_current = _first  # type: ignore[method-assign]
+    plugin._handle_neko_start_review = _second  # type: ignore[method-assign]
+    try:
+        assert isinstance(
+            await plugin._on_neko_command({"command": "explain_current"}), Ok
+        )
+        await _wait_until(first_started.is_set)
+        assert isinstance(await plugin._on_neko_command({"command": "start_review"}), Ok)
+
+        await _wait_until(first_cancelled.is_set)
+        await _wait_until(second_started.is_set)
+        assert ctx.logger.exceptions == []
+    finally:
+        release.set()
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_handler_cancelled_error_propagates_to_task_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    queue_started = asyncio.Event()
+    queue_cancelled = asyncio.Event()
+    interrupt_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _queue(_payload: dict[str, object]) -> None:
+        queue_started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            queue_cancelled.set()
+            raise
+
+    async def _interrupt(_payload: dict[str, object]) -> None:
+        interrupt_started.set()
+
+    plugin._handle_neko_quiz_me = _queue  # type: ignore[method-assign]
+    plugin._handle_neko_start_review = _interrupt  # type: ignore[method-assign]
+    try:
+        assert isinstance(await plugin._on_neko_command({"command": "quiz_me"}), Ok)
+        await _wait_until(queue_started.is_set)
+        assert isinstance(await plugin._on_neko_command({"command": "start_review"}), Ok)
+
+        await _wait_until(queue_cancelled.is_set)
+        await _wait_until(interrupt_started.is_set)
+    finally:
+        release.set()
         await plugin.shutdown()
