@@ -255,6 +255,7 @@
     var compactMinimizeBallFrame = 0;
     var compactMinimizeBallSnapshot = '';
     var compactSurfaceAnchorSnapshot = '';
+    var compactDesktopSurfaceAnchorSnapshot = '';
     var compactInteractionGeometrySnapshot = '';
     var compactSurfaceAnchorLocked = false;
     var compactSurfacePendingModelOpen = false;
@@ -279,6 +280,46 @@
             right: Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width,
             bottom: Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height
         };
+    }
+
+    function serializeCompactSurfaceRectSnapshot(rect) {
+        var normalized = normalizeCompactDesktopRect(rect);
+        if (!normalized) return '';
+        return [
+            Math.round(normalized.left),
+            Math.round(normalized.top),
+            Math.round(normalized.width),
+            Math.round(normalized.height)
+        ].join(':');
+    }
+
+    function getCompactDesktopLayoutAnchorSnapshot(layout) {
+        if (!layout) return '';
+        var anchorVersion = Number(layout.anchorVersion);
+        if (Number.isFinite(anchorVersion)) {
+            return 'version:' + Math.round(anchorVersion);
+        }
+        var screenSnapshot = serializeCompactSurfaceRectSnapshot(layout.surfaceScreenRect);
+        if (screenSnapshot) return 'screen:' + screenSnapshot;
+        var pageSnapshot = serializeCompactSurfaceRectSnapshot(layout.surface);
+        return pageSnapshot ? 'page:' + pageSnapshot : '';
+    }
+
+    function handleDesktopCompactLayoutChange(layout) {
+        var nextAnchorSnapshot = getCompactDesktopLayoutAnchorSnapshot(layout);
+        var baseAnchorChanged = false;
+        if (!nextAnchorSnapshot) {
+            baseAnchorChanged = !!compactDesktopSurfaceAnchorSnapshot || !layout;
+            compactDesktopSurfaceAnchorSnapshot = '';
+        } else if (nextAnchorSnapshot !== compactDesktopSurfaceAnchorSnapshot) {
+            baseAnchorChanged = true;
+            compactDesktopSurfaceAnchorSnapshot = nextAnchorSnapshot;
+        }
+        if (baseAnchorChanged && !compactSurfaceDesktopResizeActive) {
+            compactSurfaceAnchorLocked = false;
+            compactSurfaceAnchorSnapshot = '';
+        }
+        scheduleCompactMinimizeBallTracking();
     }
 
     function normalizeCompactDesktopWorkArea(raw) {
@@ -1067,6 +1108,22 @@
         return slices;
     }
 
+    function isCompactSurfaceBaseAnchorKind(kind) {
+        return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';
+    }
+
+    function getCompactSurfaceGeometryRole(kind) {
+        if (isCompactSurfaceBaseAnchorKind(kind)) return 'baseAnchor';
+        if (kind === 'dragHandle') return 'baseHit';
+        return 'extraIsland';
+    }
+
+    function assignCompactSurfaceGeometryRole(item) {
+        if (!item) return item;
+        item.geometryRole = getCompactSurfaceGeometryRole(item.kind);
+        return item;
+    }
+
     function collectCompactToolFanGeometryItems(element) {
         if (!element || element.getAttribute('data-compact-geometry-item') !== 'toolFan') return [];
         var parentRect = getCompactGeometryElementRect(element);
@@ -1132,7 +1189,7 @@
                         kind: kind || 'unknown',
                         visualRect: scrollbarRect,
                         hitRect: scrollbarRect,
-                        nativeRect: scrollbarRect,
+                        nativeRect: null,
                         interactive: true,
                         hitRegionKind: 'scrollbar'
                     });
@@ -1157,7 +1214,7 @@
                     kind: kind || 'unknown',
                     visualRect: clippedRect,
                     hitRect: clippedRect,
-                    nativeRect: clippedRect,
+                    nativeRect: kind === 'history' ? null : clippedRect,
                     interactive: true,
                     hitRegionKind: hitRegionKind
                 };
@@ -1211,17 +1268,21 @@
                 interactive: true
             });
             return items;
-        }, initialItems);
+        }, initialItems).map(assignCompactSurfaceGeometryRole);
     }
 
     function getCompactInteractionGeometrySnapshot() {
         if (!isHomeCompactMinimizeBallRoute()) return null;
         var layoutOverride = getElectronCompactLayoutOverride();
         var surfaceItems = isCompactHomeMinimizeBallEnabled() ? collectCompactSurfaceGeometryItems() : [];
+        var baseSurfaceItems = surfaceItems.filter(function (item) {
+            return item && item.geometryRole === 'baseAnchor';
+        });
+        var extraIslandItems = surfaceItems.filter(function (item) {
+            return item && item.geometryRole === 'extraIsland';
+        });
         var surfaceRects = surfaceItems.map(function (item) { return item.nativeRect; });
-        var baseSurfaceRects = surfaceItems
-            .filter(function (item) { return item && (item.kind === 'surfaceShell' || item.kind === 'capsule' || item.kind === 'input'); })
-            .map(function (item) { return item.nativeRect; });
+        var baseSurfaceRects = baseSurfaceItems.map(function (item) { return item.nativeRect; });
         var ballRect = isCompactHomeMinimizeBallEnabled() && !isElectronCompactExternalBallEnabled()
             ? normalizeCompactDomRect(getCompactMinimizeBallTarget())
             : null;
@@ -1234,7 +1295,16 @@
             },
             surfaceItems: surfaceItems,
             surfaceUnion: unionCompactRects(surfaceRects),
+            baseSurfaceItems: baseSurfaceItems,
             baseSurfaceRect: unionCompactRects(baseSurfaceRects),
+            baseSurfaceNativeRects: baseSurfaceItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            baseSurfaceHitRects: surfaceItems
+                .filter(function (item) { return item && (item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit'); })
+                .map(function (item) { return item.hitRect; })
+                .filter(Boolean),
+            extraIslandItems: extraIslandItems,
+            extraIslandNativeRects: extraIslandItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            extraIslandHitRects: extraIslandItems.map(function (item) { return item.hitRect; }).filter(Boolean),
             surfaceHitRects: surfaceItems.map(function (item) { return item.hitRect; }).filter(Boolean),
             surfaceNativeRects: surfaceItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
             compactChoicePlacement: layoutOverride ? layoutOverride.compactChoicePlacement : null,
@@ -5364,17 +5434,12 @@
             clearIdleDockState();
         });
 
-        window.addEventListener('neko:desktop-compact-layout-change', function () {
-            if (!compactSurfaceDesktopResizeActive) {
-                compactSurfaceAnchorLocked = false;
-                compactSurfaceAnchorSnapshot = '';
-            }
-            scheduleCompactMinimizeBallTracking();
+        window.addEventListener('neko:desktop-compact-layout-change', function (event) {
+            var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;
+            handleDesktopCompactLayoutChange(layout || null);
         });
         if (window.__nekoDesktopCompactLayout) {
-            compactSurfaceAnchorLocked = false;
-            compactSurfaceAnchorSnapshot = '';
-            scheduleCompactMinimizeBallTracking();
+            handleDesktopCompactLayoutChange(window.__nekoDesktopCompactLayout);
         }
         window.addEventListener('neko:desktop-avatar-bounds-change', function () {
             scheduleCompactMinimizeBallTracking();
