@@ -959,6 +959,9 @@ function populateModelProviderDropdowns() {
         Object.keys(_assistApiProviders).forEach(pk => {
             if (pk === 'free') return;
             if (isProviderRestricted(pk)) return;
+            // vllm_omni 是 TTS 专用 provider，仅在 TTS 下拉里出现，
+            // 不污染 conversation/summary/correction/emotion/vision/agent/omni 的下拉
+            if (pk === 'vllm_omni' && mt !== 'tts') return;
             const pInfo = _assistApiProviders[pk];
             const opt = document.createElement('option');
             opt.value = pk;
@@ -1002,14 +1005,26 @@ function onCustomModelProviderChange(modelType) {
 
     syncProviderSelectDropdowns(sel);
 
+    const previousProvider = sel.dataset.currentProvider || '';
     const provider = sel.value;
     const urlInput = document.getElementById(`${modelType}ModelUrl`);
     const keyInput = document.getElementById(`${modelType}ModelApiKey`);
     const modelIdInput = document.getElementById(`${modelType}ModelId`);
+    const voiceInput = document.getElementById(`${modelType}VoiceId`);
 
     // Model ID is NEVER readonly
     if (modelIdInput) {
         modelIdInput.removeAttribute('readonly');
+    }
+
+    if (
+        modelType === 'tts'
+        && previousProvider === 'vllm_omni'
+        && provider !== 'vllm_omni'
+        && !_isLoadingSavedConfig
+        && voiceInput
+    ) {
+        voiceInput.value = '';
     }
 
     /**
@@ -1077,6 +1092,29 @@ function onCustomModelProviderChange(modelType) {
             if (urlInput) { urlInput.value = ''; urlInput.setAttribute('readonly', 'readonly'); }
             setKeyReadonly(keyInput, '');
         }
+    } else if (provider === 'vllm_omni' && modelType === 'tts') {
+        // vllm-omni: TTS 标准 provider，但 URL/Key/ModelId/Voice 全部可编辑可保存
+        // （类似 custom，但 dropdown 里有自己的名字与默认 URL）
+        const pInfo = _assistApiProviders[provider] || {};
+        if (urlInput) {
+            // 切换到 vllm_omni 时：
+            // - 若 URL 为空，或当前 URL 是从其他 provider 自动填充的 readonly 值（用户没主动编辑过），
+            //   覆盖为 vllm_omni 默认 URL；
+            // - 若 URL 是用户主动编辑过的地址（非 readonly），保留。
+            const wasReadonly = urlInput.hasAttribute('readonly');
+            if (!urlInput.value || !urlInput.value.trim() || wasReadonly) {
+                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || '';
+            }
+            urlInput.removeAttribute('readonly');
+        }
+        const modelIdInput2 = document.getElementById(`${modelType}ModelId`);
+        if (modelIdInput2 && (!_isLoadingSavedConfig || !modelIdInput2.value || !modelIdInput2.value.trim())) {
+            modelIdInput2.value = pInfo.tts_default_model || '';
+        }
+        if (voiceInput && (!_isLoadingSavedConfig || !voiceInput.value || !voiceInput.value.trim())) {
+            voiceInput.value = pInfo.tts_default_voice || '';
+        }
+        setKeyEditable(keyInput);
     } else if (provider === 'custom') {
         // custom: remove readonly
         if (urlInput) urlInput.removeAttribute('readonly');
@@ -1099,6 +1137,7 @@ function onCustomModelProviderChange(modelType) {
         const bookKey = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
         setKeyReadonly(keyInput, bookKey);
     }
+    sel.dataset.currentProvider = provider;
 }
 
 /**
@@ -1207,6 +1246,12 @@ async function loadApiProviders() {
                     assistSelect.innerHTML = ''; // 清空现有选项
                     const assistList = Array.isArray(data.assist_api_providers) ? data.assist_api_providers : [];
                     assistList.forEach(provider => {
+                        // 修复 PR #1764 review 第三轮 #1：vllm_omni 是 TTS-only provider，
+                        // 不应出现在主 assistApiSelect 下拉框（否则被选作辅助 API 时
+                        // ConfigManager 会把 TTS WebSocket URL 复制到 OpenAI-compatible 配置，
+                        // summary/correction/agent 等 LLM 调用会打到错误的 endpoint）
+                        if (provider.key === 'vllm_omni') return;
+
                         // 如果是大陆用户，过滤掉受限的服务商
                         if (isProviderRestricted(provider.key)) {
                             console.log(`[Region] 隐藏辅助API选项: ${provider.key}（大陆用户）`);
@@ -2255,7 +2300,7 @@ function refreshAutoResolvedModelUrlsForSave(params) {
     if (!params || typeof params !== 'object') return;
 
     const resolveUrl = (modelType, providerMode) => {
-        if (!providerMode || providerMode === 'custom') return '';
+        if (!providerMode || providerMode === 'custom' || (providerMode === 'vllm_omni' && modelType === 'tts')) return '';
 
         let providerKey = providerMode;
         let scope = 'assist';
@@ -2903,7 +2948,7 @@ const ConnectivityManager = {
      * @returns {{ key: string, url: string, providerType: string }} 解析结果
      */
     resolveEffectiveKey(context) {
-        const result = { key: '', url: '', providerType: 'openai_compatible', providerKey: '', providerScope: '', cacheId: '' };
+        const result = { key: '', url: '', providerType: 'openai_compatible', subType: '', providerKey: '', providerScope: '', cacheId: '' };
 
         if (!context || !context.type) return result;
 
@@ -2974,6 +3019,7 @@ const ConnectivityManager = {
             const providerSel = document.getElementById(`${mt}ModelProvider`);
             const urlInput = document.getElementById(`${mt}ModelUrl`);
             const keyInput = document.getElementById(`${mt}ModelApiKey`);
+            const modelIdInput = document.getElementById(`${mt}ModelId`);
 
             if (!providerSel) return result;
 
@@ -3012,6 +3058,60 @@ const ConnectivityManager = {
                 // 自定义：直接从输入框读取，不设 providerKey（走自定义模式）
                 result.key = keyInput ? getRealKey(keyInput) : '';
                 result.providerType = (mt === 'omni') ? 'websocket' : 'openai_compatible';
+            } else if (provider === 'vllm_omni' && mt === 'tts') {
+                // vllm_omni + tts: 走 Mode 2（custom 路径），复用后端 _test_websocket
+                // 不设 providerKey / providerScope → 后端进入 Mode 2，用用户输入的 URL
+                //
+                // 修复 PR #1764 review #7（Codex P2）：把 base_url 规整成 worker 实际
+                // 使用的 ws endpoint，保证 _test_websocket 的握手真实命中
+                // /audio/speech/stream，而不是探测错误的端点
+                // 与后端 vllm_omni_tts_worker 中的 URL 拼接逻辑保持一致
+                const rawUrl = (urlInput ? urlInput.value.trim() : '').replace(/\/+$/, '');
+                let wsEndpoint = '';
+                if (rawUrl) {
+                    let wsUrl;
+                    if (rawUrl.startsWith('https://')) {
+                        wsUrl = 'wss://' + rawUrl.slice('https://'.length);
+                    } else if (rawUrl.startsWith('http://')) {
+                        wsUrl = 'ws://' + rawUrl.slice('http://'.length);
+                    } else if (rawUrl.startsWith('ws://') || rawUrl.startsWith('wss://')) {
+                        wsUrl = rawUrl;
+                    } else {
+                        wsUrl = 'ws://' + rawUrl;
+                    }
+                    try {
+                        // 用 URL 构造器解析（注意 ws:// 在浏览器里合法）
+                        const u = new URL(wsUrl);
+                        let basePath = (u.pathname || '').replace(/\/+$/, '');
+                        if (basePath === '' || basePath === '/') {
+                            basePath = '/v1';
+                        }
+                        // 修复 PR #1764 review 第三轮 #2：URL 规整幂等——
+                        // 若 path 已是完整 endpoint 则不重复拼接，与后端 vllm_omni_tts_worker 保持一致，
+                        // 避免用户填完整 endpoint 时连通性测试探测到 /audio/speech/stream/audio/speech/stream
+                        if (basePath.endsWith('/audio/speech/stream')) {
+                            u.pathname = basePath;
+                        } else {
+                            u.pathname = basePath + '/audio/speech/stream';
+                        }
+                        wsEndpoint = u.toString();
+                    } catch (e) {
+                        // URL 解析失败：退化为直接字符串拼接，同样做幂等检查
+                        const stripped = wsUrl.replace(/\/+$/, '');
+                        wsEndpoint = stripped.endsWith('/audio/speech/stream')
+                            ? stripped
+                            : stripped + '/audio/speech/stream';
+                    }
+                }
+                result.url = wsEndpoint;
+                result.providerType = 'websocket';
+                // 修复 PR #1764 review 第六轮：vLLM-Omni 的 /v1/audio/speech/stream 走
+                // Qwen 自定义协议，不识别 OpenAI Realtime 的 session.update。后端会
+                // 按 sub_type 分流到 _test_vllm_omni_ws_handshake 仅做握手探测，
+                // 避免发 session.update 触发 vLLM 主动断连导致连通性误判。
+                result.subType = 'vllm_omni_tts';
+                result.key = keyInput ? getRealKey(keyInput) : '';
+                result.model = modelIdInput ? modelIdInput.value.trim() : '';
             } else {
                 // 指定服务商：从 Key Book 读取
                 result.key = getEffectiveAssistKey(provider, null, { useTokenPlan: false });
@@ -3034,7 +3134,10 @@ const ConnectivityManager = {
                 if (result.providerKey && result.providerScope) {
                     result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
                 } else {
-                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}`;
+                    // 修复 PR #1764 review #6（CodeRabbit）：自定义路径 cacheId 纳入 model
+                    // vllm_omni + tts 切换 model 后必须重新探测（不同 model 可达性不同）
+                    const modelPart = result.model ? `|${result.model}` : '';
+                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}${modelPart}`;
                 }
             }
             return result;
@@ -3099,7 +3202,7 @@ const ConnectivityManager = {
      * @returns {Promise<{success: boolean, error?: string, error_code?: string}>}
      */
     async testKey(params) {
-        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, is_free: isFree, cache_id: cacheId } = params;
+        const { provider_key, provider_scope, url, api_key: apiKey, model, provider_type: providerType, sub_type: subType, is_free: isFree, cache_id: cacheId } = params;
         console.log('[ConnectivityManager] testKey called:', {
             provider_key: provider_key || '(custom)',
             provider_scope: provider_scope || '(none)',
@@ -3148,6 +3251,11 @@ const ConnectivityManager = {
                     body.url = url || '';
                     body.model = model || '';
                     body.provider_type = providerType || 'openai_compatible';
+                    // 修复 PR #1764 review 第六轮：vllm_omni TTS 透传 sub_type，
+                    // 让后端走 _test_vllm_omni_ws_handshake 而非 _test_websocket。
+                    if (subType) {
+                        body.sub_type = subType;
+                    }
                     body.is_free = !!isFree;
                 }
                 return body;
@@ -3293,7 +3401,7 @@ const ConnectivityManager = {
                     keyConfigs[customCacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
-                        provider_type: customResult.providerType, is_free: isFree
+                        provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
             });
@@ -3445,7 +3553,7 @@ const ConnectivityManager = {
                     keyConfigs[cacheId] = {
                         provider_key: customResult.providerKey, provider_scope: customResult.providerScope,
                         url: customResult.url, api_key: customResult.key || '', model: model,
-                        provider_type: customResult.providerType, is_free: isFree
+                        provider_type: customResult.providerType, sub_type: customResult.subType || '', is_free: isFree
                     };
                 }
             });

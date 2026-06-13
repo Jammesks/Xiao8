@@ -31,7 +31,13 @@ from utils.frontend_utils import contains_chinese, replace_blank, replace_corner
 from utils.screenshot_utils import process_screen_data, overlay_avatar_annotation
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
-from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from main_logic.tts_client import (
+    get_tts_worker,
+    dummy_tts_worker,
+    TTS_PROVIDER_REGISTRY,
+    VLLM_OMNI_DEFAULT_BASE_URL,
+    VLLM_OMNI_DEFAULT_MODEL,
+)
 from utils.gptsovits_config import is_gsv_disabled_voice_id
 from main_logic.tool_calling import (
     ToolCall,
@@ -500,7 +506,7 @@ from config.prompts.prompts_avatar_interaction import (
 #     AGENT_CAPABILITY_USER_PLUGIN_USE, AGENT_CAPABILITY_GENERIC, AGENT_CAPABILITY_SEPARATOR,
 #     AGENT_PLUGINS_HEADER, AGENT_PLUGINS_COUNT,
 # )
-from utils.config_manager import get_config_manager, get_reserved
+from utils.config_manager import _as_bool, get_config_manager, get_reserved
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_preset_voice_id,
@@ -1355,6 +1361,31 @@ class LLMSessionManager:
             and current_key == worker_key
         )
 
+    @staticmethod
+    def resolve_tts_api_key(provider_key: str | None, api_key_override: str | None, tts_config: dict) -> str:
+        if provider_key == 'vllm_omni':
+            return api_key_override or ''
+        return api_key_override or tts_config.get('api_key', '')
+
+    @staticmethod
+    def _is_vllm_omni_tts_enabled(core_config: dict) -> bool:
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        )
+
+    @classmethod
+    def _resolve_vllm_omni_runtime_config(cls, core_config: dict) -> tuple[str, str, str]:
+        if not cls._is_vllm_omni_tts_enabled(core_config):
+            return ('', '', '')
+        return (
+            str(core_config.get('ttsModelUrl') or '').strip()
+            or VLLM_OMNI_DEFAULT_BASE_URL,
+            str(core_config.get('ttsModelId') or '').strip()
+            or VLLM_OMNI_DEFAULT_MODEL,
+            str(core_config.get('ttsVoiceId') or '').strip()
+            or 'default',
+        )
+
     def _build_tts_runtime_key(self) -> tuple:
         """Return the effective TTS worker identity for ready-state reuse."""
         try:
@@ -1370,7 +1401,7 @@ class LLMSessionManager:
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
             )
-            api_key = api_key_override or tts_config.get('api_key', '')
+            api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
             return (
                 provider_key,
                 self.core_api_type,
@@ -1379,6 +1410,7 @@ class LLMSessionManager:
                 bool(has_custom),
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
+                self._resolve_vllm_omni_runtime_config(core_config),
                 api_key,
             )
         except Exception:
@@ -3495,7 +3527,7 @@ class LLMSessionManager:
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
             )
-            api_key = api_key_override or tts_config['api_key']
+            api_key = self.resolve_tts_api_key(provider_key, api_key_override, tts_config)
 
         # 根据实际选中的 TTS provider 类别决定是否启用流式文本规范化。
         # ws_bistream 类（qwen / step / cosyvoice）直接把文本碎片发给服务端处理，
@@ -3792,6 +3824,9 @@ class LLMSessionManager:
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
+        if self._is_vllm_omni_tts_enabled(core_config_snapshot):
+            logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
+            return True
         base_url = realtime_config.get('base_url', '')
         _, uses_provider_native_voice = resolve_native_voice_for_routing(
             self.core_api_type,
@@ -4249,7 +4284,7 @@ class LLMSessionManager:
                     tts_voice_id
                     and not is_gsv_disabled_voice_id(tts_voice_id)
                     and (
-                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        _as_bool(core_config_snapshot.get('ENABLE_CUSTOM_API'), False)
                         or core_config_snapshot.get('GPTSOVITS_ENABLED')
                     )
                 ):
@@ -4940,7 +4975,7 @@ class LLMSessionManager:
                     tts_voice_id
                     and not is_gsv_disabled_voice_id(tts_voice_id)
                     and (
-                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        _as_bool(core_config_snapshot.get('ENABLE_CUSTOM_API'), False)
                         or core_config_snapshot.get('GPTSOVITS_ENABLED')
                     )
                 ):

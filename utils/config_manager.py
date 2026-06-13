@@ -2574,6 +2574,9 @@ class ConfigManager:
         - mimo: ASSIST_API_KEY_MIMO
         """
         if provider == 'cosyvoice':
+            core_config = self.get_core_config()
+            if self._is_vllm_omni_tts_selected(core_config):
+                return None
             tts_config = self.get_model_api_config('tts_custom')
             key = (tts_config.get('api_key') or '').strip()
             return key or None
@@ -2615,6 +2618,29 @@ class ConfigManager:
             return key or None
         return None
 
+    @staticmethod
+    def _is_vllm_omni_tts_selected(core_config: dict | None) -> bool:
+        if not isinstance(core_config, dict):
+            return False
+        return _as_bool(core_config.get('ENABLE_CUSTOM_API'), False) and (
+            str(core_config.get('ttsModelProvider') or '').strip() == 'vllm_omni'
+        )
+
+    def _is_local_tts_storage_active(
+        self,
+        tts_config: dict | None = None,
+        core_config: dict | None = None,
+    ) -> bool:
+        """Return True when the current TTS config should use __LOCAL_TTS__ voices."""
+        if tts_config is None:
+            tts_config = self.get_model_api_config('tts_custom')
+        if core_config is None:
+            core_config = self.get_core_config()
+        base_url = str((tts_config or {}).get('base_url') or '')
+        return _as_bool((tts_config or {}).get('is_custom'), False) and base_url.startswith(('ws://', 'wss://')) and (
+            not self._is_vllm_omni_tts_selected(core_config)
+        )
+
     def get_cosyvoice_clone_runtime(self, provider: str = 'cosyvoice') -> dict:
         """返回声音克隆页显式选择的阿里国内/国际运行时配置。"""
         normalized_provider = str(provider or 'cosyvoice').strip().lower()
@@ -2647,19 +2673,20 @@ class ConfigManager:
             base_url = profile.get('OPENROUTER_URL', '')
 
         if normalized_provider == 'cosyvoice' and not api_key:
-            try:
-                legacy_tts_config = self.get_model_api_config('tts_custom')
-            except Exception:
-                legacy_tts_config = {}
-            legacy_key = (legacy_tts_config.get('api_key') or '').strip()
-            legacy_url = (legacy_tts_config.get('base_url') or '').strip()
-            if legacy_key and not (
-                'dashscope-intl.aliyuncs.com' in legacy_url
-                or 'dashscope-us.aliyuncs.com' in legacy_url
-            ):
-                api_key = legacy_key
-                if legacy_url:
-                    base_url = legacy_url
+            if not self._is_vllm_omni_tts_selected(core_config):
+                try:
+                    legacy_tts_config = self.get_model_api_config('tts_custom')
+                except Exception:
+                    legacy_tts_config = {}
+                legacy_key = (legacy_tts_config.get('api_key') or '').strip()
+                legacy_url = (legacy_tts_config.get('base_url') or '').strip()
+                if legacy_key and not (
+                    'dashscope-intl.aliyuncs.com' in legacy_url
+                    or 'dashscope-us.aliyuncs.com' in legacy_url
+                ):
+                    api_key = legacy_key
+                    if legacy_url:
+                        base_url = legacy_url
 
         if normalized_provider == 'cosyvoice_intl' and api_key:
             suffix = api_key[-8:] if len(api_key) >= 8 else api_key
@@ -2785,8 +2812,8 @@ class ConfigManager:
         result: dict = {}
 
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        core_config = self.get_core_config()
+        is_local_tts = self._is_local_tts_storage_active(tts_config, core_config)
         hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
@@ -2801,7 +2828,6 @@ class ConfigManager:
                 all_voices = voice_storage.get(storage_key, {})
                 result = dict(all_voices)
             else:
-                core_config = self.get_core_config()
                 audio_api_key = core_config.get('AUDIO_API_KEY', '')
                 if audio_api_key:
                     storage_key = audio_api_key
@@ -2981,8 +3007,7 @@ class ConfigManager:
                 return True
         
         tts_config = self.get_model_api_config('tts_custom')
-        base_url = tts_config.get('base_url', '')
-        is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
+        is_local_tts = self._is_local_tts_storage_active(tts_config)
 
         if is_local_tts:
             api_key = '__LOCAL_TTS__'
@@ -3026,6 +3051,9 @@ class ConfigManager:
         custom_tts_allowed = check_custom_tts_voice_allowed(voice_id, self.get_model_api_config)
         if custom_tts_allowed is not None:
             return custom_tts_allowed
+
+        if self._is_vllm_omni_tts_selected(self.get_core_config()):
+            return True
 
         voices = self.get_voices_for_current_api()
         if voice_id in voices:
@@ -3746,6 +3774,15 @@ class ConfigManager:
 
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
+
+        # 将 vLLM-Omni TTS 的前端原始字段放进 core_config snapshot，供
+        # core.py 判断是否启用外部 TTS，并生成与实际 worker 参数一致的复用 key。
+        # 凭证字段 ttsModelApiKey 不放入 snapshot；它仍由 tts_client.py 从持久化
+        # 配置读取，避免扩大通用配置快照中的敏感字段范围。
+        config['ttsModelProvider'] = str(core_cfg.get('ttsModelProvider', '') or '')
+        config['ttsModelUrl'] = str(core_cfg.get('ttsModelUrl', '') or '')
+        config['ttsModelId'] = str(core_cfg.get('ttsModelId', '') or '')
+        config['ttsVoiceId'] = str(core_cfg.get('ttsVoiceId', '') or '')
 
         # 禁用TTS
         _raw_disable_tts = core_cfg.get('disableTts', False)

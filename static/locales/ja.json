@@ -993,7 +993,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gemini"
+            "gemini": "Gemini",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreProviderNames": {
             "free": "無料版（猫娘特典、Web検索対応）",
@@ -1021,7 +1022,8 @@
             "elevenlabs": "ElevenLabs（音声クローン）",
             "claude": "Claude（Anthropic）",
             "grok": "Grok（xAI）",
-            "openrouter": "OpenRouter（モデルアグリゲーター）"
+            "openrouter": "OpenRouter（モデルアグリゲーター）",
+            "vllm_omni": "vLLM-Omni（TTS）"
         },
         "coreApiAutoFillHint": "API管理簿からキーが自動入力されます。直接入力も可能です",
         "assistApiSelectLabel": "アシストAPIプロバイダー",

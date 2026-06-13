@@ -993,7 +993,8 @@
             "glm": "GLM",
             "step": "StepFun",
             "silicon": "SiliconFlow",
-            "gemini": "Gêmeos"
+            "gemini": "Gêmeos",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreProviderNames": {
             "free": "Versão gratuita (benefício exclusivo NEKO, suporta pesquisa na web)",
@@ -1021,7 +1022,8 @@
             "elevenlabs": "ElevenLabs (clonagem de voz)",
             "claude": "Claude (Antrópico)",
             "grok": "Grok (xAI)",
-            "openrouter": "OpenRouter (agregador de modelo)"
+            "openrouter": "OpenRouter (agregador de modelo)",
+            "vllm_omni": "vLLM-Omni (TTS)"
         },
         "coreApiAutoFillHint": "Chave preenchida automaticamente no API Key Book ou insira diretamente",
         "assistApiSelectLabel": "Provedor de API de assistência",
