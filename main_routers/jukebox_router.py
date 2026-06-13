@@ -15,9 +15,9 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import asyncio
-import io
 import json
 import hashlib
+import re
 import shutil
 import zipfile
 import tempfile
@@ -46,9 +46,6 @@ CHUNK_SIZE = 1024 * 1024  # 1MB chunks
 # 允许的文件扩展名
 ALLOWED_AUDIO_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac'}
 ALLOWED_ACTION_EXTENSIONS = {'.vmd', '.bvh', '.fbx', '.vrma'}
-
-import re
-import io
 
 def check_file_size(file: UploadFile, max_size: int) -> int:
     """检查文件大小，返回文件大小（字节），超过限制则抛出异常"""
@@ -405,16 +402,36 @@ class JukeboxConfig:
         return f"{prefix}_{max_num + 1:03d}"
 
 
+def build_config_revision(data: dict) -> str:
+    """Build a small stable token for polling whether jukebox data changed."""
+    payload = {
+        "version": data.get("version", "1.0"),
+        "songs": data.get("songs", {}),
+        "actions": data.get("actions", {}),
+        "bindings": data.get("bindings", {}),
+    }
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.blake2s(serialized.encode("utf-8"), digest_size=12).hexdigest()
+
+
+def build_config_summary(data: dict) -> dict:
+    songs = data.get("songs", {})
+    actions = data.get("actions", {})
+    return {
+        "configRevision": build_config_revision(data),
+        "songCount": len(songs),
+        "visibleSongCount": sum(1 for song in songs.values() if song.get("visible") is not False),
+        "actionCount": len(actions),
+    }
+
+
 def calculate_md5(file_path: Path) -> str:
-    """计算文件 MD5"""
+    """Calculate the MD5 hash for a file."""
     md5_hash = hashlib.md5()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(CHUNK_SIZE), b""):
             md5_hash.update(chunk)
     return md5_hash.hexdigest()
-
-
-
 
 
 # ═══════════════════ API 路由 ═══════════════════
@@ -424,7 +441,15 @@ async def get_config():
     """获取完整配置（本地绑定已经是ID级别，直接返回）"""
     config_mgr = get_config_manager()
     jukebox_config = JukeboxConfig(config_mgr)
-    return jukebox_config.data
+    return {**jukebox_config.data, **build_config_summary(jukebox_config.data)}
+
+
+@router.get("/config/summary")
+async def get_config_summary():
+    """Return a lightweight config summary for polling full playlist refreshes."""
+    config_mgr = get_config_manager()
+    jukebox_config = JukeboxConfig(config_mgr)
+    return build_config_summary(jukebox_config.data)
 
 
 @router.post("/songs")
