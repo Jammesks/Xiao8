@@ -848,10 +848,42 @@
     function showLive2d() {
         console.log('[App] showLive2d函数被调用');
 
+        if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber') {
+            console.log('[App] showLive2d: 当前为 PNGTuber 模式，跳过 Live2D 显示');
+            const live2dContainerForPngtuber = document.getElementById('live2d-container');
+            if (live2dContainerForPngtuber) {
+                live2dContainerForPngtuber.style.display = 'none';
+                live2dContainerForPngtuber.classList.add('hidden');
+            }
+            const live2dCanvasForPngtuber = document.getElementById('live2d-canvas');
+            if (live2dCanvasForPngtuber) {
+                live2dCanvasForPngtuber.style.visibility = 'hidden';
+                live2dCanvasForPngtuber.style.pointerEvents = 'none';
+            }
+            document.querySelectorAll('#live2d-floating-buttons, #live2d-lock-icon, #live2d-return-button-container')
+                .forEach(el => el.remove());
+            return;
+        }
+
         // 检查是否处于"请她离开"状态
         if (window.live2dManager && window.live2dManager._goodbyeClicked) {
             console.log('[App] showLive2d: 当前处于"请她离开"状态，跳过显示逻辑');
             return;
+        }
+
+        if (window.pngtuberManager && typeof window.pngtuberManager.hide === 'function') {
+            window.pngtuberManager.hide();
+        }
+        if (window.cleanupPNGTuberOverlayUI && typeof window.cleanupPNGTuberOverlayUI === 'function') {
+            window.cleanupPNGTuberOverlayUI();
+        } else {
+            document.querySelectorAll('#pngtuber-floating-buttons, #pngtuber-lock-icon, #pngtuber-return-button-container')
+                .forEach(el => el.remove());
+        }
+        const pngtuberContainerForLive2d = document.getElementById('pngtuber-container');
+        if (pngtuberContainerForLive2d) {
+            pngtuberContainerForLive2d.style.display = 'none';
+            pngtuberContainerForLive2d.classList.add('hidden');
         }
 
         const container = document.getElementById('live2d-container');
@@ -1412,6 +1444,56 @@
                     statusElementMmd.style.setProperty('opacity', '0', 'important');
                 }
 
+            } else if (effectiveModelType === 'pngtuber') {
+                const pngtuberContainer = document.getElementById('pngtuber-container');
+                const basePngtuberConfig = catgirlConfig.pngtuber || catgirlConfig._reserved?.avatar?.pngtuber || window.lanlan_config?.pngtuber || {};
+                const pngtuberConfig = pendingPngtuberReturnConfig
+                    ? Object.assign({}, basePngtuberConfig, pendingPngtuberReturnConfig)
+                    : basePngtuberConfig;
+                pendingPngtuberReturnConfig = null;
+
+                if (window.loadPNGTuberAvatar) {
+                    await window.loadPNGTuberAvatar(pngtuberConfig);
+                }
+                if (window.pngtuberManager && typeof window.pngtuberManager.show === 'function') {
+                    window.pngtuberManager.show();
+                } else if (pngtuberContainer) {
+                    pngtuberContainer.classList.remove('hidden');
+                    pngtuberContainer.style.removeProperty('display');
+                    pngtuberContainer.style.display = 'block';
+                    pngtuberContainer.style.visibility = 'visible';
+                }
+
+                if (pngtuberContainer) {
+                    prepareModelReturnContainer(pngtuberContainer, consumeModelReturnEnterRect(), { clearPointerEvents: true });
+                    pngtuberContainer.style.setProperty('pointer-events', 'auto', 'important');
+                    const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
+                    if (pngtuberImage) {
+                        pngtuberImage.style.setProperty('pointer-events', 'auto', 'important');
+                    }
+                }
+
+                const live2dContainerPngtuber = document.getElementById('live2d-container');
+                if (live2dContainerPngtuber) { live2dContainerPngtuber.style.display = 'none'; live2dContainerPngtuber.classList.add('hidden'); }
+                const vrmContainerPngtuber = document.getElementById('vrm-container');
+                if (vrmContainerPngtuber) { vrmContainerPngtuber.style.display = 'none'; vrmContainerPngtuber.classList.add('hidden'); }
+                const vrmCanvasPngtuber = document.getElementById('vrm-canvas');
+                if (vrmCanvasPngtuber) { vrmCanvasPngtuber.style.visibility = 'hidden'; vrmCanvasPngtuber.style.pointerEvents = 'none'; }
+                const mmdContainerPngtuber = document.getElementById('mmd-container');
+                if (mmdContainerPngtuber) { mmdContainerPngtuber.style.display = 'none'; mmdContainerPngtuber.classList.add('hidden'); }
+                const mmdCanvasPngtuber = document.getElementById('mmd-canvas');
+                if (mmdCanvasPngtuber) { mmdCanvasPngtuber.style.visibility = 'hidden'; mmdCanvasPngtuber.style.pointerEvents = 'none'; }
+
+                ['live2d', 'vrm', 'mmd'].forEach(prefix => {
+                    const floatingButtons = document.getElementById(`${prefix}-floating-buttons`);
+                    if (floatingButtons) floatingButtons.style.display = 'none';
+                    const lockIcon = document.getElementById(`${prefix}-lock-icon`);
+                    if (lockIcon) lockIcon.style.display = 'none';
+                });
+
+                if (window.pngtuberManager && typeof window.pngtuberManager.setupFloatingButtons === 'function') {
+                    window.pngtuberManager.setupFloatingButtons();
+                }
             } else {
                 // 显示 Live2D 模型
                 showLive2d();
@@ -1481,6 +1563,7 @@
     let multiWindowReturnBallDragState = null;
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
+    let pendingPngtuberReturnConfig = null;
 
     function waitForAnimationFrames(count) {
         const remaining = Math.max(1, Number(count) || 1);
@@ -1503,6 +1586,112 @@
         return style.display !== 'none' && style.visibility !== 'hidden';
     }
 
+    function clampPngtuberOffset(value) {
+        return Math.max(-5000, Math.min(5000, Number(value) || 0));
+    }
+
+    function getPngtuberManager() {
+        return window.pngtuberManager || null;
+    }
+
+    function syncPngtuberReturnConfig(config) {
+        if (!config) return null;
+        const manager = getPngtuberManager();
+        if (manager && manager.config) {
+            manager.config = Object.assign({}, manager.config, config);
+            if (typeof manager.applyTransform === 'function') {
+                manager.applyTransform();
+            }
+            if (typeof manager.syncGlobalConfig === 'function') {
+                manager.syncGlobalConfig();
+            } else if (window.lanlan_config && typeof window.lanlan_config === 'object') {
+                window.lanlan_config.pngtuber = Object.assign({}, manager.config);
+            }
+            if (typeof manager.updateFloatingButtonsPosition === 'function') {
+                manager.updateFloatingButtonsPosition();
+            }
+            if (typeof manager.updateLockIconPosition === 'function') {
+                manager.updateLockIconPosition();
+            }
+            return Object.assign({}, manager.config);
+        }
+        if (window.lanlan_config && typeof window.lanlan_config === 'object') {
+            window.lanlan_config.pngtuber = Object.assign({}, window.lanlan_config.pngtuber || {}, config);
+            return Object.assign({}, window.lanlan_config.pngtuber);
+        }
+        return Object.assign({}, config);
+    }
+
+    function applyPngtuberScreenDelta(screenDx, screenDy) {
+        const manager = getPngtuberManager();
+        const baseConfig = Object.assign(
+            {},
+            window.lanlan_config && window.lanlan_config.pngtuber ? window.lanlan_config.pngtuber : {},
+            manager && manager.config ? manager.config : {}
+        );
+        baseConfig.offset_x = clampPngtuberOffset((Number(baseConfig.offset_x) || 0) + screenDx);
+        baseConfig.offset_y = clampPngtuberOffset((Number(baseConfig.offset_y) || 0) + screenDy);
+        return syncPngtuberReturnConfig(baseConfig);
+    }
+
+    function getPngtuberScreenRect() {
+        const manager = getPngtuberManager();
+        const candidates = [
+            manager && manager.image,
+            manager && manager.canvasElement,
+            manager && manager.imageElement,
+            document.querySelector('#pngtuber-container .pngtuber-image'),
+            document.getElementById('pngtuber-container')
+        ];
+        for (const candidate of candidates) {
+            if (!candidate || typeof candidate.getBoundingClientRect !== 'function') continue;
+            try {
+                const rect = normalizeNekoScreenRect(candidate.getBoundingClientRect());
+                if (rect) return rect;
+            } catch (_) {}
+        }
+        return null;
+    }
+
+    function getPngtuberSnapDelta(rect) {
+        const normalized = normalizeNekoScreenRect(rect);
+        if (!normalized) return null;
+        const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
+        const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
+        const margin = 12;
+
+        let dx = 0;
+        let dy = 0;
+        if (normalized.width <= viewportWidth - margin * 2) {
+            if (normalized.left < margin) dx = margin - normalized.left;
+            if (normalized.right + dx > viewportWidth - margin) dx = viewportWidth - margin - normalized.right;
+        } else {
+            dx = viewportWidth / 2 - (normalized.left + normalized.width / 2);
+        }
+        if (normalized.height <= viewportHeight - margin * 2) {
+            if (normalized.top < margin) dy = margin - normalized.top;
+            if (normalized.bottom + dy > viewportHeight - margin) dy = viewportHeight - margin - normalized.bottom;
+        } else {
+            dy = viewportHeight / 2 - (normalized.top + normalized.height / 2);
+        }
+
+        if (Math.abs(dx) < 1) dx = 0;
+        if (Math.abs(dy) < 1) dy = 0;
+        return { dx, dy };
+    }
+
+    async function snapPngtuberIntoScreen() {
+        const manager = getPngtuberManager();
+        if (!manager || !manager.config || !isModelContainerVisible('pngtuber-container')) {
+            return false;
+        }
+        const delta = getPngtuberSnapDelta(getPngtuberScreenRect());
+        if (!delta || (!delta.dx && !delta.dy)) return false;
+        applyPngtuberScreenDelta(delta.dx, delta.dy);
+        await waitForAnimationFrames(1);
+        return true;
+    }
+
     async function saveReturnModelPosition(modelType) {
         try {
             if (modelType === 'mmd') {
@@ -1516,6 +1705,13 @@
                 const interaction = window.vrmManager && window.vrmManager.interaction;
                 if (interaction && typeof interaction._savePositionAfterInteraction === 'function') {
                     await interaction._savePositionAfterInteraction();
+                }
+                return;
+            }
+            if (modelType === 'pngtuber') {
+                const manager = getPngtuberManager();
+                if (manager && typeof manager.saveCurrentConfig === 'function') {
+                    await manager.saveCurrentConfig();
                 }
                 return;
             }
@@ -1560,6 +1756,17 @@
                     }
                 } else if (shouldSaveWhenUnchanged) {
                     await saveReturnModelPosition('vrm');
+                }
+                return;
+            }
+
+            if ((window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
+                && getPngtuberManager()
+                && isModelContainerVisible('pngtuber-container')) {
+                activeModelType = 'pngtuber';
+                const snapped = await snapPngtuberIntoScreen();
+                if (snapped || shouldSaveWhenUnchanged) {
+                    await saveReturnModelPosition('pngtuber');
                 }
                 return;
             }
@@ -1696,6 +1903,13 @@
             } catch (_) {}
         }
 
+        if (manager.image && typeof manager.image.getBoundingClientRect === 'function') {
+            try {
+                const rect = normalizeNekoScreenRect(manager.image.getBoundingClientRect());
+                if (rect) return rect;
+            } catch (_) {}
+        }
+
         const model = typeof manager.getCurrentModel === 'function'
             ? manager.getCurrentModel()
             : manager.currentModel;
@@ -1715,7 +1929,10 @@
     }
 
     function getActiveModelTransitionRect() {
+        const isPngtuberModelActive = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
+            && isModelContainerActive('pngtuber-container');
         const candidates = [
+            { active: isPngtuberModelActive, manager: window.pngtuberManager },
             { active: isModelContainerActive('mmd-container'), manager: window.mmdManager },
             { active: isModelContainerActive('vrm-container'), manager: window.vrmManager },
             { active: true, manager: window.live2dManager }
@@ -3378,8 +3595,9 @@
             const _live2dGoodbyeBtn = document.getElementById('live2d-btn-goodbye');
             const _vrmGoodbyeBtn = document.getElementById('vrm-btn-goodbye');
             const _mmdGoodbyeBtn = document.getElementById('mmd-btn-goodbye');
+            const _pngtuberGoodbyeBtn = document.getElementById('pngtuber-btn-goodbye');
             let savedGoodbyeRect = null;
-            for (const btn of [_mmdGoodbyeBtn, _vrmGoodbyeBtn, _live2dGoodbyeBtn]) {
+            for (const btn of [_mmdGoodbyeBtn, _vrmGoodbyeBtn, _pngtuberGoodbyeBtn, _live2dGoodbyeBtn]) {
                 if (!btn) continue;
                 try {
                     const r = btn.getBoundingClientRect();
@@ -3431,6 +3649,13 @@
                 popup.style.setProperty('opacity', '0', 'important');
                 popup.style.setProperty('pointer-events', 'none', 'important');
             });
+            const allPngtuberPopups = document.querySelectorAll('[id^="pngtuber-popup-"]');
+            allPngtuberPopups.forEach(popup => {
+                popup.style.setProperty('display', 'none', 'important');
+                popup.style.setProperty('visibility', 'hidden', 'important');
+                popup.style.setProperty('opacity', '0', 'important');
+                popup.style.setProperty('pointer-events', 'none', 'important');
+            });
             // 关闭 MMD 弹窗
             document.querySelectorAll('[id^="mmd-popup-"]').forEach(popup => {
                 popup.style.setProperty('display', 'none', 'important');
@@ -3450,13 +3675,23 @@
             if (window.vrmManager && typeof window.vrmManager.resetAllButtons === 'function') {
                 window.vrmManager.resetAllButtons();
             }
+            if (window.pngtuberManager && typeof window.pngtuberManager.resetAllButtons === 'function') {
+                window.pngtuberManager.resetAllButtons();
+            }
 
             // 保存当前锁定状态，以便"请她回来"时恢复
             // core.setLocked() 将值写入 manager.isLocked，因此从 manager 级别读取
+            const pngtuberContainerForState = document.getElementById('pngtuber-container');
+            const isPngtuberActiveForState = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber'
+                && pngtuberContainerForState
+                && pngtuberContainerForState.style.display !== 'none'
+                && !pngtuberContainerForState.classList.contains('hidden');
+
             window._savedLockState = {
                 live2d: window.live2dManager ? window.live2dManager.isLocked : false,
                 vrm: window.vrmManager ? window.vrmManager.isLocked : false,
-                mmd: window.mmdManager ? window.mmdManager.isLocked : false
+                mmd: window.mmdManager ? window.mmdManager.isLocked : false,
+                pngtuber: isPngtuberActiveForState && window.pngtuberManager ? window.pngtuberManager.isLocked : false
             };
 
             // 设置锁定状态
@@ -3468,6 +3703,9 @@
             }
             if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
                 window.mmdManager.core.setLocked(true);
+            }
+            if (isPngtuberActiveForState && window.pngtuberManager && typeof window.pngtuberManager.setLocked === 'function') {
+                window.pngtuberManager.setLocked(true, { updateFloatingButtons: false });
             }
 
             // 不立即隐藏 canvas，先仅禁用交互
@@ -3489,12 +3727,16 @@
             const vrmContainer = document.getElementById('vrm-container');
             const live2dContainer = document.getElementById('live2d-container');
             const mmdContainer = document.getElementById('mmd-container');
+            const pngtuberContainer = document.getElementById('pngtuber-container');
             const isVrmActive = vrmContainer &&
                 vrmContainer.style.display !== 'none' &&
                 !vrmContainer.classList.contains('hidden');
             const isMmdActive = mmdContainer &&
                 mmdContainer.style.display !== 'none' &&
                 !mmdContainer.classList.contains('hidden');
+            const isPngtuberActive = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber' && pngtuberContainer &&
+                pngtuberContainer.style.display !== 'none' &&
+                !pngtuberContainer.classList.contains('hidden');
             console.log('[App] 判断当前模型类型 - isVrmActive:', isVrmActive, 'isMmdActive:', isMmdActive);
 
             // VRM 也先仅禁用交互
@@ -3525,6 +3767,17 @@
             }
             if (isMmdActive && mmdContainer) {
                 playModelGoodbyeExit(mmdContainer, savedGoodbyeRect);
+            }
+
+            if (isPngtuberActive && pngtuberContainer) {
+                pngtuberContainer.style.setProperty('pointer-events', 'none', 'important');
+                const pngtuberImage = pngtuberContainer.querySelector('.pngtuber-image');
+                if (pngtuberImage) {
+                    pngtuberImage.style.setProperty('pointer-events', 'none', 'important');
+                }
+            }
+            if (isPngtuberActive && pngtuberContainer) {
+                playModelGoodbyeExit(pngtuberContainer, savedGoodbyeRect);
             }
 
             // 为 VRM 容器添加 minimized 类
@@ -3566,6 +3819,10 @@
                     mmdCanvas.style.setProperty('visibility', 'hidden', 'important');
                     mmdCanvas.style.transition = '';
                 }
+                if (isPngtuberActive && pngtuberContainer) {
+                    pngtuberContainer.style.setProperty('visibility', 'hidden', 'important');
+                    pngtuberContainer.style.setProperty('display', 'none', 'important');
+                }
             }, NEKO_MODEL_CAT_TRANSITION_DURATION_MS);
 
             // 隐藏所有浮动按钮和锁按钮
@@ -3606,14 +3863,29 @@
                 mmdLockIcon.style.setProperty('visibility', 'hidden', 'important');
                 mmdLockIcon.style.setProperty('opacity', '0', 'important');
             }
+            const pngtuberFloatingButtons = document.getElementById('pngtuber-floating-buttons');
+            if (pngtuberFloatingButtons) {
+                pngtuberFloatingButtons.style.setProperty('display', 'none', 'important');
+                pngtuberFloatingButtons.style.setProperty('visibility', 'hidden', 'important');
+                pngtuberFloatingButtons.style.setProperty('opacity', '0', 'important');
+            }
+            const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
+            const pngtuberLockIcon = document.getElementById('pngtuber-lock-icon');
+            if (isReturningToPngtuber && pngtuberLockIcon) {
+                pngtuberLockIcon.style.setProperty('display', 'none', 'important');
+                pngtuberLockIcon.style.setProperty('visibility', 'hidden', 'important');
+                pngtuberLockIcon.style.setProperty('opacity', '0', 'important');
+            }
 
             // 显示独立的"请她回来"按钮
             const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
             let vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
             let mmdReturnButtonContainer = document.getElementById('mmd-return-button-container');
+            let pngtuberReturnButtonContainer = document.getElementById('pngtuber-return-button-container');
 
             const useMmdReturn = isMmdActive;
             const useVrmReturn = isVrmActive && !isMmdActive;
+            const usePngtuberReturn = isPngtuberActive && !isVrmActive && !isMmdActive;
 
             let activeReturnButtonContainer = null;
 
@@ -3630,11 +3902,23 @@
                 hideReturnBallContainer(mmdReturnButtonContainer);
             }
 
-            // 显示Live2D的返回按钮（仅在非VRM/非MMD模式时显示）
-            if (!useVrmReturn && !useMmdReturn && live2dReturnButtonContainer) {
+            // 显示Live2D的返回按钮（仅在非VRM/非MMD/非PNGTuber模式时显示）
+            if (!useVrmReturn && !useMmdReturn && !usePngtuberReturn && live2dReturnButtonContainer) {
                 activeReturnButtonContainer = showReturnBallContainer(live2dReturnButtonContainer, savedGoodbyeRect, { deferReveal: true });
             } else {
                 hideReturnBallContainer(live2dReturnButtonContainer);
+            }
+
+            if (usePngtuberReturn && !pngtuberReturnButtonContainer && window.pngtuberManager) {
+                if (typeof window.pngtuberManager.setupFloatingButtons === 'function') {
+                    window.pngtuberManager.setupFloatingButtons();
+                    pngtuberReturnButtonContainer = document.getElementById('pngtuber-return-button-container');
+                }
+            }
+            if (usePngtuberReturn && pngtuberReturnButtonContainer) {
+                activeReturnButtonContainer = showReturnBallContainer(pngtuberReturnButtonContainer, savedGoodbyeRect);
+            } else {
+                hideReturnBallContainer(pngtuberReturnButtonContainer);
             }
 
             // 显示VRM的返回按钮
@@ -3783,6 +4067,7 @@
                 console.log('[App] 模型正在切换为猫形态，忽略本次请她回来事件');
                 return;
             }
+            const isReturningToPngtuber = (window.lanlan_config?.model_type || '').toLowerCase() === 'pngtuber';
             if (multiWindowReturnBallDragState) {
                 multiWindowReturnBallDragState.dragSessionToken += 1;
                 clearMultiWindowReturnBallDeferredWork(multiWindowReturnBallDragState);
@@ -3833,9 +4118,11 @@
             const live2dReturnButtonContainer = document.getElementById('live2d-return-button-container');
             const vrmReturnButtonContainer = document.getElementById('vrm-return-button-container');
             const mmdReturnButtonContainer = document.getElementById('mmd-return-button-container');
+            const pngtuberReturnButtonContainer = document.getElementById('pngtuber-return-button-container');
             hideReturnBallContainer(live2dReturnButtonContainer);
             hideReturnBallContainer(vrmReturnButtonContainer);
             hideReturnBallContainer(mmdReturnButtonContainer);
+            hideReturnBallContainer(pngtuberReturnButtonContainer);
             ensureMultiWindowReturnBallDrag(null);
 
             // 如果返回按钮被拖拽到新位置，先偏移模型再显示，避免闪烁
@@ -3866,6 +4153,9 @@
                             liveModel.x += screenDx;
                             liveModel.y += screenDy;
                         }
+                    }
+                    if (isReturningToPngtuber && window.pngtuberManager && window.pngtuberManager.config) {
+                        pendingPngtuberReturnConfig = applyPngtuberScreenDelta(screenDx, screenDy);
                     }
                     returnModelWasMoved = true;
                 }
@@ -3937,6 +4227,12 @@
             }
             // 恢复"请她离开"之前的锁定状态（而非强制解锁）
             const savedLock = window._savedLockState || { live2d: false, vrm: false, mmd: false };
+            const pngtuberLockIcon = document.getElementById('pngtuber-lock-icon');
+            if (pngtuberLockIcon) {
+                pngtuberLockIcon.style.removeProperty('display');
+                pngtuberLockIcon.style.removeProperty('visibility');
+                pngtuberLockIcon.style.removeProperty('opacity');
+            }
             if (window.live2dManager && typeof window.live2dManager.setLocked === 'function') {
                 window.live2dManager.setLocked(savedLock.live2d, { updateFloatingButtons: false });
             }
@@ -3945,6 +4241,9 @@
             }
             if (window.mmdManager && window.mmdManager.core && typeof window.mmdManager.core.setLocked === 'function') {
                 window.mmdManager.core.setLocked(savedLock.mmd);
+            }
+            if (isReturningToPngtuber && window.pngtuberManager && typeof window.pngtuberManager.setLocked === 'function') {
+                window.pngtuberManager.setLocked(savedLock.pngtuber, { updateFloatingButtons: false });
             }
             window._savedLockState = null;
 
@@ -4041,6 +4340,23 @@
 
             // 恢复对话区
             const chatContainerEl = document.getElementById('chat-container');
+            const pngtuberFloatingButtons = document.getElementById('pngtuber-floating-buttons');
+            if (isReturningToPngtuber && pngtuberFloatingButtons) {
+                pngtuberFloatingButtons.style.removeProperty('display');
+                pngtuberFloatingButtons.style.removeProperty('visibility');
+                pngtuberFloatingButtons.style.removeProperty('opacity');
+                pngtuberFloatingButtons.style.setProperty('display', 'flex', 'important');
+                pngtuberFloatingButtons.style.setProperty('visibility', 'visible', 'important');
+                pngtuberFloatingButtons.style.setProperty('opacity', '1', 'important');
+
+                const allPngtuberPopups = document.querySelectorAll('[id^="pngtuber-popup-"]');
+                allPngtuberPopups.forEach(popup => {
+                    popup.style.removeProperty('pointer-events');
+                    popup.style.removeProperty('visibility');
+                    popup.style.pointerEvents = 'auto';
+                });
+            }
+
             const isMobile = isMobileViewport;
             const collapseClass = isMobile ? 'mobile-collapsed' : 'minimized';
 
@@ -4215,6 +4531,7 @@
         window.addEventListener('live2d-return-click', handleReturnClick);
         window.addEventListener('vrm-return-click', handleReturnClick);
         window.addEventListener('mmd-return-click', handleReturnClick);
+        window.addEventListener('pngtuber-return-click', handleReturnClick);
     }
 
     mod.initFloatingButtonListeners = initFloatingButtonListeners;

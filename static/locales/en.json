@@ -1514,7 +1514,9 @@
         "motionStopped": "Motion stopped",
         "expressionCleared": "Expression cleared",
         "cannotDeleteBoundModel": "Cannot delete the model currently in use",
-        "modelInUse": "In use"
+        "modelInUse": "In use",
+        "pngtuberTalkPreview": "Test Talking",
+        "pngtuberStatePreview": "State Preview"
     },
     "voice": {
         "title": "Voice Registration",

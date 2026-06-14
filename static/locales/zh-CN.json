@@ -1514,7 +1514,9 @@
         "motionStopped": "动作已停止",
         "expressionCleared": "表情已清除",
         "cannotDeleteBoundModel": "无法删除当前正在使用的模型",
-        "modelInUse": "使用中"
+        "modelInUse": "使用中",
+        "pngtuberTalkPreview": "测试说话",
+        "pngtuberStatePreview": "状态预览"
     },
     "voice": {
         "title": "音色注册",

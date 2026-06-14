@@ -1514,7 +1514,9 @@
         "motionStopped": "モーションを停止しました",
         "expressionCleared": "表情をクリアしました",
         "cannotDeleteBoundModel": "現在使用中のモデルは削除できません",
-        "modelInUse": "使用中"
+        "modelInUse": "使用中",
+        "pngtuberTalkPreview": "発話をテスト",
+        "pngtuberStatePreview": "状態プレビュー"
     },
     "voice": {
         "title": "ボイス登録",

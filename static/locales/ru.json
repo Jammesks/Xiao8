@@ -1514,7 +1514,9 @@
         "motionStopped": "Анимация остановлена",
         "expressionCleared": "Выражение очищено",
         "cannotDeleteBoundModel": "Нельзя удалить модель, которая сейчас используется",
-        "modelInUse": "Используется"
+        "modelInUse": "Используется",
+        "pngtuberTalkPreview": "Проверить речь",
+        "pngtuberStatePreview": "Предпросмотр состояния"
     },
     "voice": {
         "title": "Регистрация голоса",

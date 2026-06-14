@@ -1514,7 +1514,9 @@
         "motionStopped": "Movimento interrompido",
         "expressionCleared": "Expressão limpa",
         "cannotDeleteBoundModel": "Não é possível excluir o modelo em uso",
-        "modelInUse": "Em uso"
+        "modelInUse": "Em uso",
+        "pngtuberTalkPreview": "Testar fala",
+        "pngtuberStatePreview": "Prévia de estado"
     },
     "voice": {
         "title": "Registro de voz",
