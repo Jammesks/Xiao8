@@ -862,6 +862,12 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "nativeRect: hitRect" in collector_block
     assert "slot.indexOf('hidden') === 0" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
+    assert "var tooltip = child.querySelector && child.querySelector('.compact-input-tool-tooltip');" in collector_block
+    assert "id: itemId + ':tooltip'" in collector_block
+    assert "visualRect: tooltipRect" in collector_block
+    assert "hitRect: null" in collector_block
+    assert "nativeRect: tooltipRect" in collector_block
+    assert "interactive: false" in collector_block
     assert "hitRect: nativeRect" in native_hit_block
     assert "interactive: true" in native_hit_block
     assert "hitRect: null" not in native_hit_block
@@ -871,6 +877,42 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "readCompactToolFanPixelVar(style, '--compact-tool-wheel-hover-radius', 116)" in script
     assert "Math.sqrt(Math.max(0" in script
     assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
+
+
+def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    tooltip_block = css_block(
+        styles,
+        ".compact-input-tool-fan .compact-input-tool-tooltip {",
+        ".compact-input-tool-fan .compact-input-tool-item:hover,",
+    )
+    visible_block = css_block(
+        styles,
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:hover > .compact-input-tool-tooltip,\n'
+        '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-input-tool-fan-interactive="true"] .compact-input-tool-item:focus-within > .compact-input-tool-tooltip {',
+        ".compact-input-tool-fan .compact-input-tool-item > img,",
+    )
+    dark_tooltip_block = css_block(
+        styles,
+        '[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {',
+        '[data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {',
+    )
+
+    assert "pointer-events: none;" in tooltip_block
+    assert "user-select: none;" in tooltip_block
+    assert "left: calc(100% + 5px);" in tooltip_block
+    assert "top: calc(100% - 6px);" in tooltip_block
+    assert "border-radius: 0;" in tooltip_block
+    assert "background: #ffffff;" in tooltip_block
+    assert "box-shadow: none;" in tooltip_block
+    assert "scale(" not in tooltip_block
+    assert "transform-origin: 0 0;" in tooltip_block
+    assert "transform: translate(0, 0);" in visible_block
+    assert "scale(" not in visible_block
+    assert "border-color: #8b949e;" in dark_tooltip_block
+    assert "background: #202124;" in dark_tooltip_block
+    assert "color: #f3f4f6;" in dark_tooltip_block
 
 
 def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle():
