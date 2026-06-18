@@ -9,6 +9,7 @@ choices[0].message 是 None 的合法响应。原来 ainvoke/invoke 直接
 from __future__ import annotations
 
 import asyncio
+import gc
 import threading
 from unittest.mock import AsyncMock, MagicMock
 
@@ -170,3 +171,88 @@ async def test_create_chat_llm_async_closes_late_result_after_cancellation(
 
     release.set()
     await asyncio.wait_for(closed.wait(), timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_chat_openai_reuses_default_ssl_context(monkeypatch):
+    original_create_default_context = llm_client_module.ssl.create_default_context
+    calls = []
+
+    def counting_create_default_context(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_create_default_context(*args, **kwargs)
+
+    monkeypatch.setattr(llm_client_module, "_DEFAULT_SSL_CONTEXT", None)
+    monkeypatch.setattr(
+        llm_client_module.ssl,
+        "create_default_context",
+        counting_create_default_context,
+    )
+
+    clients = [
+        llm_client_module.ChatOpenAI(
+            model="model-a",
+            base_url="https://example.com/v1",
+            api_key="sk-test",
+        ),
+        llm_client_module.ChatOpenAI(
+            model="model-b",
+            base_url="https://example.com/v1",
+            api_key="sk-test",
+        ),
+    ]
+    try:
+        assert len(calls) == 1
+    finally:
+        for client in clients:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_openai_finalizer_closes_injected_http_clients(monkeypatch):
+    client = llm_client_module.ChatOpenAI(
+        model="model-a",
+        base_url="https://example.com/v1",
+        api_key="sk-test",
+    )
+    close = MagicMock()
+    aclose = AsyncMock()
+    monkeypatch.setattr(client._client, "close", close)
+    monkeypatch.setattr(client._aclient, "close", aclose)
+    del client
+    gc.collect()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    close.assert_called_once_with()
+    aclose.assert_awaited_once_with()
+    assert not llm_client_module._PENDING_CLIENT_CLOSE_TASKS
+
+
+@pytest.mark.asyncio
+async def test_chat_openai_sync_close_detaches_finalizer_after_closing_clients(monkeypatch):
+    client = llm_client_module.ChatOpenAI(
+        model="model-a",
+        base_url="https://example.com/v1",
+        api_key="sk-test",
+    )
+    close = MagicMock()
+    aclose = AsyncMock()
+    monkeypatch.setattr(client._client, "close", close)
+    monkeypatch.setattr(client._aclient, "close", aclose)
+
+    finalizer = client._client_finalizer
+    client.close()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert not finalizer.alive
+    close.assert_called_once_with()
+    aclose.assert_awaited_once_with()
+    del client
+    gc.collect()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    close.assert_called_once_with()
+    aclose.assert_awaited_once_with()
+    assert not llm_client_module._PENDING_CLIENT_CLOSE_TASKS
