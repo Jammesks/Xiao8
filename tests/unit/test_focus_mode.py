@@ -4,13 +4,17 @@ Coverage:
 1. ``_focus_decide`` pure leaky-accumulator transition: strong-single enter /
    scattered-cue accumulation / charge cap / decayed exit / noise-doesn't-stick /
    hard-cap exit / topic-switch exit-and-clear.
-2. ``FocusScorer``: keyword/cadence/silence/open_thread sub-signals, inline
-   vs idle path applicability + weight renormalisation, cadence baseline roll.
+2. ``FocusScorer`` (inline-only): keyword + cadence sub-signals, weight
+   renormalisation, cadence baseline roll.
 3. ``SessionStateMachine.update_focus``: async enter/exit, FOCUS_EXIT payload,
-   reset clearing, master-switch-off degradation.
+   retention override, reset clearing, master-switch-off degradation.
 4. ``prompts_focus`` lexicon scans: vulnerability count, cross-locale (mixed
    language) scanning, topic-switch anchoring.
 5. ``stream_text`` thinking-on threading (Path A wiring).
+6. Idle cooldown: proactive ticks decay charge (two-tier retention by whether
+   the turn spoke), never enter; thinking read is mode-only; decay is pinned to
+   the observed episode + turn (skips on no-episode / episode-changed / inline
+   recharge of the same episode).
 """
 import os
 import sys
@@ -41,14 +45,6 @@ def _th(retention=0.5, enter=1.0, exit=0.3, hard_cap_turns=8, enabled=True):
     )
 
 
-class _Snap:
-    """Minimal ActivitySnapshot stand-in for the scorer (duck-typed)."""
-
-    def __init__(self, *, seconds_since_user_msg=None, unfinished_thread=None,
-                 open_threads=None):
-        self.seconds_since_user_msg = seconds_since_user_msg
-        self.unfinished_thread = unfinished_thread
-        self.open_threads = open_threads or []
 
 
 # ── 1. pure leaky-accumulator transition ───────────────────────────
@@ -170,19 +166,19 @@ def test_decide_hard_cap_yields_exactly_n_focus_turns():
     assert focus_turns == 4
 
 
-# ── 2. FocusScorer ──────────────────────────────────────────────────
+# ── 2. FocusScorer (inline-only: keyword + cadence) ─────────────────
 def test_scorer_keyword_inline():
     s = FocusScorer("x")
-    res = s.score(_Snap(), user_text="今天好累，感觉一个人撑不住了")
+    res = s.score(user_text="今天好累，感觉一个人撑不住了")
     assert res.signals["keyword"] is not None and res.signals["keyword"] > 0
-    assert res.signals["silence"] is None  # inline path: silence N/A
+    assert "silence" not in res.signals  # idle signals removed
     assert res.score > 0
 
 
 def test_scorer_no_signal_is_zero():
     s = FocusScorer("x")
-    res = s.score(_Snap(), user_text="嗯，那个文件我改好了发你了")
-    # No vulnerability keyword, no open thread, cadence not enough samples.
+    res = s.score(user_text="嗯，那个文件我改好了发你了")
+    # No vulnerability keyword; cadence not enough samples.
     assert res.signals["keyword"] == 0.0
     assert res.score == 0.0
 
@@ -191,55 +187,27 @@ def test_scorer_cadence_drop_after_baseline():
     s = FocusScorer("x")
     # Feed long messages to build a baseline (each call appends after scoring).
     for _ in range(4):
-        s.score(_Snap(), user_text="这是一段比较长的正常聊天消息内容大概三十个字符以上")
-    res = s.score(_Snap(), user_text="嗯。")
+        s.score(user_text="这是一段比较长的正常聊天消息内容大概三十个字符以上")
+    res = s.score(user_text="嗯。")
     assert res.signals["cadence"] is not None and res.signals["cadence"] > 0.5
 
 
 def test_scorer_cadence_none_without_baseline():
     s = FocusScorer("x")
-    res = s.score(_Snap(), user_text="嗯。")
+    res = s.score(user_text="嗯。")
     assert res.signals["cadence"] is None  # below FOCUS_CADENCE_MIN_SAMPLES
 
 
-def test_scorer_idle_silence_and_renorm():
-    s = FocusScorer("x")
-    # Idle path (user_text=None): only silence + open_thread apply.
-    res = s.score(_Snap(seconds_since_user_msg=config.FOCUS_SILENCE_FULL_SECONDS + 10),
-                  user_text=None)
-    assert res.signals["keyword"] is None and res.signals["cadence"] is None
-    assert res.signals["silence"] == 1.0
-    # silence weight 0.2 + open_thread 0.15 (=0) → renorm: 1.0*0.2/(0.35)=0.571
-    assert 0.5 < res.score < 0.62
-
-
-def test_scorer_open_thread_lifts_idle_score():
-    s = FocusScorer("x")
-    res = s.score(
-        _Snap(seconds_since_user_msg=config.FOCUS_SILENCE_FULL_SECONDS + 10,
-              open_threads=["上次没聊完的换工作的事"]),
-        user_text=None,
-    )
-    assert res.signals["open_thread"] == 1.0
-    assert res.score == 1.0  # both applicable idle signals saturated
-
-
-def test_scorer_open_thread_idle_only():
-    # On the inline path the just-arrived message has already cleared the
-    # tracker's unfinished_thread, so open_thread is N/A (None) there — it
-    # must not be a structural 0 that dilutes the inline average.
-    s = FocusScorer("x")
-    res = s.score(_Snap(open_threads=["残留的开放话题"]), user_text="今天好累")
-    assert res.signals["open_thread"] is None
-
-
 # ── 3. SessionStateMachine.update_focus (async) ─────────────────────
-def _patch_charge(monkeypatch, *, retention=0.5, enter=1.0, exit=0.3, hard_cap=99):
+def _patch_charge(monkeypatch, *, retention=0.5, enter=1.0, exit=0.3, hard_cap=99,
+                  idle_silent=0.95, idle_replied=0.6):
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", True)
     monkeypatch.setattr(config, "FOCUS_CHARGE_RETENTION", retention)
     monkeypatch.setattr(config, "FOCUS_CHARGE_ENTER", enter)
     monkeypatch.setattr(config, "FOCUS_CHARGE_EXIT", exit)
     monkeypatch.setattr(config, "FOCUS_HARD_CAP_TURNS", hard_cap)
+    monkeypatch.setattr(config, "FOCUS_IDLE_SILENT_RETENTION", idle_silent)
+    monkeypatch.setattr(config, "FOCUS_IDLE_REPLIED_RETENTION", idle_replied)
 
 
 async def test_sm_enter_and_exit_cycle(monkeypatch):
@@ -521,25 +489,124 @@ async def test_inline_focus_is_privacy_independent(monkeypatch):
     assert mgr.state.mode is CognitionMode.FOCUS
 
 
-async def test_idle_gate_snapshot_none_preserves_charge(monkeypatch):
-    # No snapshot this idle tick (tracker unavailable / privacy nulls SCREEN
-    # data): the idle path skips scoring but must NOT clear the accumulator —
-    # the privacy-independent inline path keeps driving the episode, so
-    # clearing here would wipe a legitimate in-progress Focus.
-    _patch_charge(monkeypatch, enter=1.0)  # leaves FOCUS_MODE_ENABLED True
+async def test_idle_thinking_is_read_only(monkeypatch):
+    # _focus_idle_thinking reports whether we're in Focus WITHOUT mutating the
+    # charge — the decay is deferred to the post-turn cooldown.
+    _patch_charge(monkeypatch, enter=1.0)
     mgr = _bare_mgr()
-    await mgr.state.update_focus(0.6)
-    _charge_before = mgr.state.snapshot()["focus_charge"]
-    assert _charge_before > 0
-    assert await mgr._focus_idle_decision(None) is False
-    assert mgr.state.snapshot()["focus_charge"] == _charge_before  # preserved
+    await mgr.state.update_focus(1.0)  # FOCUS
+    charge_before = mgr.state.snapshot()["focus_charge"]
+    assert mgr._focus_idle_thinking() is True
+    assert mgr.state.snapshot()["focus_charge"] == charge_before  # unchanged
+    # disabled → False (and no mutation here either)
+    monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
+    assert mgr._focus_idle_thinking() is False
 
 
-async def test_idle_gate_disabled_clears_regular_charge(monkeypatch):
+async def test_idle_cooldown_replied_exits_focus_faster(monkeypatch):
+    # Inline drives entry; speaking proactive turns (replied=True) cool the
+    # episode down to the exit bar in a few ticks. Slow (silent) decays less.
+    _patch_charge(monkeypatch, enter=1.0, exit=0.3, idle_silent=0.95, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # inline enter, charge cap 1.0
+    snap = mgr.state.snapshot()
+    tok, turn = snap["focus_episode_id"], snap["focus_turn_count"]
+    assert mgr.state.mode is CognitionMode.FOCUS
+    # silent tick barely moves it (×0.95); replied tick spends it (×0.6)
+    await mgr._focus_idle_cooldown(replied=False, episode_token=tok, turn_token=turn)
+    assert abs(mgr.state.snapshot()["focus_charge"] - 0.95) < 1e-9
+    # 0.95 → 0.57 → 0.342 → 0.2052 (<0.3) ⇒ exits on the 3rd replied tick
+    for _ in range(2):
+        await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
+        assert mgr.state.mode is CognitionMode.FOCUS
+    await mgr._focus_idle_cooldown(replied=True, episode_token=tok, turn_token=turn)
+    assert mgr.state.mode is CognitionMode.REGULAR
+
+
+async def test_idle_cooldown_does_not_spend_hard_cap(monkeypatch):
+    # Idle cooldown ticks must NOT count toward FOCUS_HARD_CAP_TURNS (that bounds
+    # inline turns). With a tiny hard cap, many silent cooldowns stay in FOCUS as
+    # long as the charge holds, instead of force-exiting after hard_cap polls.
+    _patch_charge(monkeypatch, enter=1.0, exit=0.1, hard_cap=2, idle_silent=0.99)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)
+    snap = mgr.state.snapshot()
+    tok, turn = snap["focus_episode_id"], snap["focus_turn_count"]
+    for _ in range(5):  # > hard_cap, but cooldown doesn't bump turn_count
+        await mgr._focus_idle_cooldown(replied=False, episode_token=tok, turn_token=turn)
+    assert mgr.state.mode is CognitionMode.FOCUS  # not force-exited by hard cap
+    # entry set turn_count=1; cooldown ticks (count_turn=False) never bumped it
+    assert mgr.state.snapshot()["focus_turn_count"] == 1
+
+
+async def test_idle_cooldown_skips_when_episode_changed(monkeypatch):
+    # Race guard: if the observed episode is no longer current (inline exited /
+    # re-entered while the proactive turn finished), the stale cooldown is a no-op.
+    _patch_charge(monkeypatch, enter=1.0, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # FOCUS, episode A
+    charge_now = mgr.state.snapshot()["focus_charge"]
+    await mgr._focus_idle_cooldown(replied=True, episode_token="stale-other-episode")
+    assert mgr.state.snapshot()["focus_charge"] == charge_now  # untouched
+
+
+async def test_idle_cooldown_skips_when_no_episode_observed(monkeypatch):
+    # A proactive turn that ran while REGULAR observes no episode (token=None).
+    # The cooldown must NOT erode the pre-entry accumulator the inline path is
+    # building toward ENTER — entering Focus is the inline path's job alone.
+    _patch_charge(monkeypatch, enter=1.0, idle_silent=0.95, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(0.6)  # REGULAR, charge building under the bar
+    assert mgr.state.mode is CognitionMode.REGULAR
+    snap = mgr.state.snapshot()
+    assert snap["focus_episode_id"] is None
+    charge_now = snap["focus_charge"]
+    await mgr._focus_idle_cooldown(
+        replied=True, episode_token=None, turn_token=snap["focus_turn_count"],
+    )
+    assert mgr.state.snapshot()["focus_charge"] == charge_now  # untouched
+    assert mgr.state.mode is CognitionMode.REGULAR
+
+
+async def test_idle_cooldown_skips_when_inline_recharged_same_episode(monkeypatch):
+    # Turn race within ONE episode: a user message lands mid-flight and the
+    # inline path recharges the same episode (turn count bumps). The stale
+    # proactive cooldown must not decay that fresh, user-driven charge — the
+    # turn-count token mismatch makes it a no-op even though the episode id matches.
+    _patch_charge(monkeypatch, retention=0.5, enter=1.0, idle_replied=0.6)
+    mgr = _bare_mgr()
+    await mgr.state.update_focus(1.0)  # FOCUS, episode A, turn_count 1
+    snap = mgr.state.snapshot()
+    ep_tok, turn_tok = snap["focus_episode_id"], snap["focus_turn_count"]
+    # Inline turn recharges the same episode while the proactive turn finishes.
+    await mgr.state.update_focus(0.5)  # same episode A, turn_count -> 2
+    fresh = mgr.state.snapshot()
+    assert fresh["focus_episode_id"] == ep_tok          # same episode
+    assert fresh["focus_turn_count"] != turn_tok        # but turn moved
+    charge_fresh = fresh["focus_charge"]
+    await mgr._focus_idle_cooldown(
+        replied=True, episode_token=ep_tok, turn_token=turn_tok,
+    )
+    assert mgr.state.snapshot()["focus_charge"] == charge_fresh  # not decayed
+
+
+async def test_idle_cooldown_disabled_clears_regular_charge(monkeypatch):
     _patch_charge(monkeypatch, enter=1.0)
     mgr = _bare_mgr()
     await mgr.state.update_focus(0.6)
     assert mgr.state.snapshot()["focus_charge"] > 0
     monkeypatch.setattr(config, "FOCUS_MODE_ENABLED", False)
-    assert await mgr._focus_idle_decision(_Snap(seconds_since_user_msg=300)) is False
+    await mgr._focus_idle_cooldown(replied=False, episode_token=None)
     assert mgr.state.snapshot()["focus_charge"] == 0.0
+
+
+async def test_update_focus_retention_override_and_count_turn(monkeypatch):
+    # retention_override replaces FOCUS_CHARGE_RETENTION for one tick; count_turn
+    # =False decays without bumping the hard-cap turn counter.
+    _patch_charge(monkeypatch, retention=0.5, enter=1.0, exit=0.01)
+    sm = SessionStateMachine(lanlan_name="x")
+    await sm.update_focus(1.0)  # FOCUS, charge 1.0, turn_count 1
+    tc_before = sm.snapshot()["focus_turn_count"]
+    await sm.update_focus(0.0, retention_override=0.9, count_turn=False)
+    assert abs(sm.snapshot()["focus_charge"] - 0.9) < 1e-9  # override applied
+    assert sm.snapshot()["focus_turn_count"] == tc_before    # not bumped

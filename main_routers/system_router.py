@@ -4880,6 +4880,10 @@ async def proactive_chat(request: Request):
                 await _increment_proactive_chat_total(lanlan_name)
             else:
                 logger.info("[%s] 主动搭话本轮未发起：语音 nudge 被 guard 跳过", lanlan_name)
+            # No Focus cooldown here: a voice nudge is realtime and never runs a
+            # Focus thinking-on reply, so it is not a Focus proactive turn — the
+            # cooldown is applied only at the text Phase-2 idle path (which is
+            # where _focus_idle_thinking actually gates thinking-on).
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -4908,6 +4912,15 @@ async def proactive_chat(request: Request):
         # ``S.proactiveFixedScheduleMode`` branch in static/app-proactive.js.
         _next_schedule_fixed_mode = False
 
+        # Focus idle cooldown bookkeeping (read by _end_proactive via closure).
+        # Set only when the flow reaches the Phase-2 idle Focus decision, so
+        # short-circuit replies (mini-game invite, break-reminder, must-fire)
+        # that return before Phase 2 never spend Focus charge. The episode token
+        # pins the decay to the episode the thinking decision observed.
+        _focus_phase2_reached = False
+        _focus_episode_token = None
+        _focus_turn_token = None
+
         async def _end_proactive(resp: JSONResponse) -> JSONResponse:
             """Wraps every normal/short-circuit proactive exit: idempotently fires PROACTIVE_DONE.
 
@@ -4935,12 +4948,27 @@ async def proactive_chat(request: Request):
             # 散落各分支无需各自记；排查"她这轮为什么没主动说话"看这条即可。
             # 占坑前的早退（游戏路由 / voice 与 text 的 409 并发拒绝）不经过
             # 本出口，各自就地补了同前缀（"主动搭话本轮未发起："）的 info。
-            if body.get("action") != "chat":
+            _replied = body.get("action") == "chat"
+            if not _replied:
                 logger.info(
                     "[%s] 主动搭话本轮未发起：%s",
                     lanlan_name,
                     body.get("message") or body.get("error") or "(无原因说明)",
                 )
+            # Idle Focus cooldown — only for turns that reached the Phase-2 idle
+            # Focus decision (short-circuit replies never set the flag, so they
+            # don't spend Focus). A proactive turn never raises the charge; it
+            # decays — faster when it delivered a reply (_replied) than when
+            # Phase 2 produced nothing. count_turn=False + episode-token guard
+            # live inside _focus_idle_cooldown.
+            if _focus_phase2_reached:
+                try:
+                    await mgr._focus_idle_cooldown(
+                        replied=_replied, episode_token=_focus_episode_token,
+                        turn_token=_focus_turn_token,
+                    )
+                except Exception as _focus_err:
+                    logger.debug("[%s] focus idle cooldown failed: %s", lanlan_name, _focus_err)
             if 'next_schedule_fixed_mode' in body:
                 return resp
             body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
@@ -6509,28 +6537,22 @@ async def proactive_chat(request: Request):
         # unfinished_thread）仍取自早期 snapshot，避免 Phase 1 中途 state 变化
         # 导致 gating 决策（restricted_screen_only 收紧 enabled_modes 等）和最终
         # prompt 不一致。
-        # Freshest snapshot to feed the idle Focus decision below — Phase 1
-        # (source fetch + memory + LLM) just elapsed, so silence duration and
-        # open-thread signals moved on. Falls back to the entry snapshot if the
-        # refresh fails / is unavailable.
-        _focus_idle_snapshot = activity_snapshot
+        # Freshest enrichment for the proactive prompt — Phase 1 (source fetch +
+        # memory + LLM) just elapsed, so activity scores / open threads moved on.
+        # Falls back to the entry snapshot if the refresh fails / is unavailable.
+        # (The idle Focus decision no longer consumes a snapshot — it is a pure
+        # charge cooldown — so this block only feeds the prompt now.)
         if activity_snapshot is not None:
             from dataclasses import replace as _dc_replace
             from main_logic.activity import format_activity_state_section
             try:
                 fresh_enrich = await mgr._activity_tracker.get_snapshot()
                 # restricted_screen_only deliberately strips semantic open_threads
-                # so gaming / focused-work prompts stay screen-only. The idle Focus
-                # decision must see the SAME filtered threads the prompt does —
-                # otherwise _signal_open_thread could charge / enter Focus from a
-                # text follow-up signal this workflow just suppressed. Keep
-                # fresh_enrich's silence duration (freshest), only swap open_threads.
+                # so gaming / focused-work prompts stay screen-only — render the
+                # prompt with that filtered set.
                 _filtered_open_threads = _open_threads_for_activity_state(
                     activity_snapshot,
                     fresh_enrich.open_threads,
-                )
-                _focus_idle_snapshot = _dc_replace(
-                    fresh_enrich, open_threads=_filtered_open_threads,
                 )
                 display_snap = _dc_replace(
                     activity_snapshot,
@@ -6613,11 +6635,21 @@ async def proactive_chat(request: Request):
         await mgr.state.fire(_SE.PROACTIVE_PHASE2)
 
         # Path B (idle) Focus 凝神：this round is now committed to speaking
-        # (PHASE2 fired), so tick the shared hysteresis on the idle-path score
-        # (silence + open-thread) and decide whether Phase-2 generation runs
-        # thinking-on. Dominates all three Phase-2 generate sites below
-        # (main stream / format-fix regen / BM25 anti-repeat regen).
-        _focus_phase2_thinking = await mgr._focus_idle_decision(_focus_idle_snapshot)
+        # (PHASE2 fired). Read-only: does this proactive reply run thinking-on?
+        # (= the session is already in Focus, inline-driven). A proactive turn
+        # never raises the charge; the charge cooldown happens after the turn in
+        # _end_proactive (it needs to know whether we actually spoke). Dominates
+        # all three Phase-2 generate sites below (main stream / format-fix regen
+        # / BM25 anti-repeat regen).
+        _focus_phase2_thinking = mgr._focus_idle_thinking()
+        # Mark that this turn reached the Phase-2 idle Focus decision and pin the
+        # focus state it observed (episode id + turn count) — _end_proactive
+        # applies the cooldown only for such turns, and only if still in this
+        # exact episode/turn (race guard: a no-op if inline moved it since).
+        _focus_phase2_reached = True
+        _focus_phase2_snap = mgr.state.snapshot()
+        _focus_episode_token = _focus_phase2_snap.get("focus_episode_id")
+        _focus_turn_token = _focus_phase2_snap.get("focus_turn_count")
 
         # --- 构建 LLM + messages (static/dynamic 分离) ---
         phase2_use_vision = bool(screenshot_b64_for_phase2 and has_vision_model)
