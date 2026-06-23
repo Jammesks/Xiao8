@@ -40,6 +40,8 @@ from config import (
     AGENT_PLUGIN_COARSE_MAX_TOKENS,
     AGENT_UNIFIED_ASSESS_MAX_TOKENS,
     AGENT_PLUGIN_FULL_MAX_TOKENS,
+    AGENT_ACTION_GATE_ENABLED,
+    AGENT_ACTION_GATE_THRESHOLD,
     TASK_DETAIL_MAX_TOKENS,
 )
 from utils.llm_client import (
@@ -1776,6 +1778,7 @@ class DirectTaskExecutor:
         agent_flags: Optional[Dict[str, bool]] = None,
         conversation_id: Optional[str] = None,
         lang: str = "en",
+        action_intent: Optional[float] = None,
     ) -> Optional[TaskResult]:
         """
         Assess each channel's feasibility and return a Decision (no execution).
@@ -1796,9 +1799,69 @@ class DirectTaskExecutor:
                 agent_flags=agent_flags,
                 conversation_id=conversation_id,
                 lang=lang,
+                action_intent=action_intent,
             )
         finally:
             reset_active_character(char_token)
+
+    def _deterministic_action_signal(
+        self, user_text: str, *, openclaw_enabled: bool, user_plugin_enabled: bool,
+    ) -> bool:
+        """Zero-LLM action shortcuts the cheap pre-gate must NEVER skip.
+
+        Returns True if either fires — meaning the gate must not brake even when
+        the small model read the turn as chat:
+        * OpenClaw magic word (pure rule match, no LLM).
+        * Plugin keyword match over the ALREADY-CACHED plugin list only (no fetch,
+          so the brake path never triggers short_description generation).
+
+        Fails open (returns True) when user_plugin is on but the plugin list is
+        not yet loaded: we cannot run the keyword shortcut, so we must not let the
+        gate skip it. A brand-new plugin's keyword may be missed by the gate until
+        the next non-braked turn refreshes ``self.plugin_list`` — acceptable since
+        a session's plugin set rarely changes mid-conversation.
+        """
+        text = (user_text or "").strip()
+        if not text:
+            return False
+        if openclaw_enabled:
+            try:
+                from brain.openclaw_adapter import OpenClawAdapter
+                # Full ZERO-LLM rule classifier, not just exact magic words: it
+                # also catches natural-language commands ("取消这个任务" → /stop,
+                # "换个话题" → /new, …). These are no-LLM shortcuts the gate must
+                # keep — only the LLM magic-intent path is fair to skip on chat.
+                if OpenClawAdapter.rule_magic_command(text):
+                    return True
+            except Exception:
+                return True  # can't run the shortcut → fail open
+        if user_plugin_enabled:
+            plugins = self.plugin_list
+            if not plugins:
+                return True  # not loaded → can't run keyword shortcut → fail open
+            try:
+                from brain.plugin_filter import _match_keywords
+                for p in plugins:
+                    # Skip passive plugins: they never participate in dispatch
+                    # (mirrors _assess_user_plugin), so a passive plugin must not
+                    # influence the gate at all.
+                    if not isinstance(p, dict) or p.get("passive"):
+                        continue
+                    kws = p.get("keywords", [])
+                    if isinstance(kws, list) and kws:
+                        if _match_keywords(text, kws):
+                            return True
+                    elif self._agent_visible_plugin_entries(p):
+                        # A dispatchable plugin with no usable keyword shortcut can
+                        # only be selected by the LLM _assess_user_plugin (e.g.
+                        # first-party plugins exposing agent entries but no
+                        # top-level keywords). The keyword shortcut can't represent
+                        # it, so the gate must fail open when one exists — never
+                        # brake a turn such a plugin could have handled.
+                        return True
+            except Exception:
+                return True  # on any error, fail open
+        return False
 
     async def _analyze_and_execute_inner(
         self,
@@ -1807,6 +1870,7 @@ class DirectTaskExecutor:
         agent_flags: Optional[Dict[str, bool]] = None,
         conversation_id: Optional[str] = None,
         lang: str = "en",
+        action_intent: Optional[float] = None,
     ) -> Optional[TaskResult]:
         task_id = str(uuid.uuid4())
 
@@ -1835,6 +1899,28 @@ class DirectTaskExecutor:
         latest_user_request = self._extract_latest_user_intent(conversation)
         recent_context = self._extract_recent_context(messages)
         normalized_intent = self._normalize_user_intent(latest_user_request, recent_context)
+
+        # ── 廉价前置闸 ───────────────────────────────────────
+        # action_intent 是 master-emotion 在 input-time 那次小模型调用产出的
+        # 「agent 相关度」信号，已在 main 侧做过两件事：(1) 按本轮 user 文本做
+        # freshness 匹配（陈旧/异轮读数 → None，绝不用上一轮信号刹本轮）；(2) 折进
+        # complexity 取 max，所以高 complexity 的硬推理轮（如 openfang 多步推理）
+        # 即便 action 低也不会被刹。这里只要：自信地低 + 零 LLM 确定性 shortcut
+        # （magic word 规则 + 插件关键词）也全静默，就跳过下面 1~2 次大模型评估。
+        # 闸非对称：None（无可用信号/陈旧）或任一确定性命中都不刹车 —— 最坏多花一次
+        # 评估，绝不漏真任务。
+        if action_intent is not None and AGENT_ACTION_GATE_ENABLED:
+            if action_intent < AGENT_ACTION_GATE_THRESHOLD and not self._deterministic_action_signal(
+                latest_user_request,
+                openclaw_enabled=openclaw_enabled,
+                user_plugin_enabled=user_plugin_enabled,
+            ):
+                logger.info(
+                    "[AgentGate] skip assessment: action_intent=%.2f < %.2f, no deterministic signal",
+                    action_intent, AGENT_ACTION_GATE_THRESHOLD,
+                )
+                return None
+
         # ── 可用性检查 ──────────────────────────────────────
         cu_available = False
         if computer_use_enabled:
