@@ -50,12 +50,12 @@
 
 ## 🐾 What We Are — and What We're Not
 
-> In one line: **N.E.K.O. is not an Agent that runs chores for you, nor a chat frontend for role-play — it's a "digital life" that senses real-world time, reaches out to you first, remembers you, and can also get things done for you.**
+In one line: **N.E.K.O. is not an Agent that runs chores for you, nor a chat frontend for role-play — it's a "digital life" that senses real-world time, reaches out to you first, remembers you, and can also get things done for you.**
 
 **✅ What we are:**
 
-- **An end-to-end integrated AI companion platform**: real-time voice / text / vision understanding + five-dimensional persistent memory + multi-form Avatar (Live2D / VRM / MMD) + proactive companionship + Agent tool execution + character-card sharing + plugin marketplace + multi-device ecosystem — all out of the box.
-- **One and the same "her"**: shares a single set of memories and personality across desktop, games, mobile, and smart hardware — the more time you spend together, the better she knows you.
+- **An end-to-end integrated AI companion platform**: real-time voice / text / vision understanding + five-dimensional persistent memory + multi-form Avatar (Live2D / VRM / MMD) + proactive companionship + Agent tool execution + character-card sharing + plugin marketplace + multi-device ecosystem — **all out of the box**.
+- **One and the same "her"**: shares a single set of memories and personality across desktop, mobile, games, and smart hardware, with a sense of time — the more time you spend together, the better she knows you.
 - **Always open source**: the core driver is Apache 2.0, runs locally, and your data stays in your own hands.
 
 **❌ What we're not:**
@@ -69,7 +69,7 @@
 | Compared with | What they are | How N.E.K.O. differs |
 |---|---|---|
 | **General-purpose Agents like OpenClaw / Hermes** | Execution engines built to "complete a task": give a command → it works → it's done | Centered on "**relationship and companionship**"; you can call such Agents as her hands and feet (A2A), yet while a task runs she still keeps an eye on you in real time |
-| **Role-play frontends like AI taverns (SillyTavern)** | Pure-text RP frontends: rely on manually maintained context / worldbooks, and you wire up the model yourself | **An end-to-end integrated product**: native voice + vision, Avatar motion, cross-scene persistent memory, time awareness, and the ability to truly operate your computer / browser — zero-config, out of the box |
+| **Role-play frontends like AI taverns (SillyTavern)** | Pure-text RP frontends: you wire up the model yourself and rely on manually maintained context / worldbooks | **End-to-end integrated, breaking the fourth wall**: native voice + visual perception, character appearance + motion, cross-scene persistent memory, time awareness, and the ability to truly operate external devices — zero-config, out of the box |
 
 ## 🐱 We Are — The N.E.K.O. Project
 
