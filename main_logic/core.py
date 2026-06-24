@@ -2719,6 +2719,35 @@ class LLMSessionManager:
         except Exception as e:
             logger.debug("[%s] focus_thinking ws push failed: %s", self.lanlan_name, e)
 
+    async def handle_thinking_active(self, active: bool = True) -> None:
+        """Session callback: the model started (active=True) or finished
+        (active=False) emitting reasoning/thinking chunks for the current stream
+        (the text is filtered out upstream; only this boolean pulse reaches us).
+        Drives the chat thinking-dots bubble for ANY reasoning turn — decoupled
+        from the Focus inline decision. A Focus turn pre-pulses the bubble before
+        streaming (still works, idempotent); a non-Focus turn whose provider
+        reasons internally pulses here on its first reasoning chunk. The bubble
+        is cleared on the first visible token (send_lanlan_response), when the
+        text turn ends (the unconditional finally in the text path), or — for a
+        proactive/greeting/avatar turn that reasons but commits no visible text —
+        by the active=False clear from prompt_ephemeral's finally. Best-effort —
+        idempotent via ``_push_focus_thinking``'s cached state."""
+        await self._push_focus_thinking(active)
+
+    def _make_thinking_active_callback(self, session_ref):
+        """Bind ``handle_thinking_active`` to ONE specific OmniOfflineClient so a
+        reasoning pulse only drives the bubble while that client is the live
+        session. The thinking bubble is a single per-window surface; a pulse from
+        a NON-current client — a pending hot-swap session, or a just-demoted old
+        session still draining a stream after the swap — must not light or clear
+        the current window (CodeRabbit). The live session always matches, so its
+        pulses/clears pass through unchanged; everything else is a silent no-op.
+        getattr default tolerates call-time teardown where self.session is None."""
+        async def _on_thinking_active(active: bool) -> None:
+            if session_ref is getattr(self, "session", None):
+                await self.handle_thinking_active(active)
+        return _on_thinking_active
+
     async def _focus_idle_cooldown(
         self, *, replied: bool, episode_token, turn_token=None,
     ) -> None:
@@ -6164,6 +6193,8 @@ class LLMSessionManager:
                         provider_type=conversation_config.get('provider_type'),
                         vision_provider_type=vision_config.get('provider_type'),
                         on_text_delta=self.handle_text_data,
+                        # on_thinking_active bound below via a session-scoped
+                        # closure so only the LIVE session drives the bubble.
                         on_input_transcript=self.handle_text_input_transcript,
                         on_output_transcript=self.handle_output_transcript,
                         on_connection_error=self.handle_connection_error,
@@ -6189,6 +6220,7 @@ class LLMSessionManager:
                         ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
+                    new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
                 else:
                     realtime_config = self._config_manager.get_model_api_config('realtime')
                     new_session = OmniRealtimeClient(
@@ -6649,6 +6681,9 @@ class LLMSessionManager:
                     vision_base_url=vision_config['base_url'],
                     vision_api_key=vision_config['api_key'],
                     on_text_delta=self.handle_text_data,
+                    # on_thinking_active bound below via a session-scoped closure:
+                    # the pending session must NOT light the current window's
+                    # bubble while it warms up / before the hot-swap promotes it.
                     on_input_transcript=self.handle_text_input_transcript,
                     on_output_transcript=self.handle_output_transcript,
                     on_connection_error=self.handle_connection_error,
@@ -6671,6 +6706,7 @@ class LLMSessionManager:
                     ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
+                self.pending_session.on_thinking_active = self._make_thinking_active_callback(self.pending_session)
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
             else:
                 # 语音模式：使用 OmniRealtimeClient
@@ -9529,16 +9565,24 @@ class LLMSessionManager:
                     if memory_text:
                         stream_text_kwargs["history_replacement_text"] = memory_text
                     if _focus_thinking:
-                        # 凝神 turn runs thinking-on: pulse the frontend so the chat
-                        # history shows a thinking-dots bubble until the first visible
-                        # token lands (cleared in send_lanlan_response) or the turn
-                        # ends (the finally below covers tool-only / empty / error turns).
+                        # 凝神 turn runs thinking-on: pre-pulse the frontend so the
+                        # bubble shows up the instant the turn starts (immediate
+                        # feedback), before any reasoning chunk arrives. Idempotent
+                        # and harmless — a non-Focus turn instead pulses lazily from
+                        # OmniOfflineClient.on_thinking_active on its first reasoning
+                        # chunk (handle_thinking_active). Either way the bubble clears
+                        # on the first visible token (send_lanlan_response) or in the
+                        # unconditional finally below.
                         await self._push_focus_thinking(True)
                     try:
                         await self.session.stream_text(data, **stream_text_kwargs)
                     finally:
-                        if _focus_thinking:
-                            await self._push_focus_thinking(False)
+                        # Clear unconditionally: a non-Focus turn may have pulsed the
+                        # bubble True via the reasoning callback, so gating the clear
+                        # on _focus_thinking would leave it stuck on tool-only / empty
+                        # / error turns. _push_focus_thinking is idempotent, so a no-op
+                        # clear when nothing pulsed costs nothing.
+                        await self._push_focus_thinking(False)
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
