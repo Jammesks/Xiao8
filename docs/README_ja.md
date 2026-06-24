@@ -23,8 +23,6 @@
 
 :newspaper: **[Steam版](https://store.steampowered.com/app/4099310/__NEKO/)は無料で配信中！気に入ったらライブラリに追加して、よければレビューもお願いします~**
 
-*Project N.E.K.O.、ニャー宇宙！*
-
 </div>
 
 ---
@@ -36,7 +34,7 @@
 <td align="center" width="25%">💬<br><b>プロアクティブな伴走</b><br>画面理解、SNSトレンド、個人フィード、音楽やミームから話題を見つけ、彼女から話しかけ、あなたの好きな新しい話題を届けます</td>
 <td align="center" width="25%">🎙️<br><b>リアルタイム音声・テキスト・視覚理解</b><br>リアルタイム音声 (Realtime API) + テキストチャット (ChatCompletion)、リアルタイム視覚理解に対応</td>
 <td align="center" width="25%">🧠<br><b>五次元メモリシステム</b><br>作業記憶 / 直近記憶 / 事実記憶 / 反省記憶 / 人格記憶で、使うほどあなたを理解していきます</td>
-<td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD の3形態、モーションキャプチャとフルスクリーン追跡対応</td>
+<td align="center" width="25%">🎭<br><b>マルチフォームAvatar</b><br>Live2D / VRM / MMD / PNGTuber / デスクトップ猫ペットの5形態。モーションキャプチャとフルスクリーン追跡に対応</td>
 </tr>
 <tr>
 <td align="center">🤖<br><b>エージェントツール実行</b><br>ブラウザやPCを操作し、CUA / OpenClaw A2A / プラグインを呼び出してタスクを実行</td>
@@ -409,17 +407,19 @@ uv sync
 
 # 3. フロントエンドプロジェクトをビルド（Node.js >= 20.19 が必要。初回実行時またはフロントエンドコード変更後に必要）
 #    推奨：一括ビルドスクリプトを使用（公式にサポートされているビルド手順です）
-#      Windows：      build_frontend.bat
-#      Linux/macOS：  ./build_frontend.sh
+#      Windows：
+build_frontend.bat
+#      Linux/macOS：
+./build_frontend.sh
 #    手動でビルドする場合（スクリプトと同じコマンドを使用してください）：
 # cd frontend/react-neko-chat && npm install && npm run build && cd ../..
 # cd frontend/plugin-manager && npm install && npm run build-only && cd ../..
 
 # 4. サービスを起動（最低限 main_server と memory_server が必要）
-uv run python memory_server.py
-uv run python main_server.py
+uv run python app/memory_server.py
+uv run python app/main_server.py
 # オプション：Agentサービスを起動
-uv run python agent_server.py
+uv run python app/agent_server.py
 
 # 5. http://localhost:48911 にアクセスしてAPI Keyを設定し、使用開始
 ```
@@ -436,12 +436,12 @@ uv run python agent_server.py
 
 追加機能のためにサードパーティAIサービスを設定できます：
 
-- **コアAPI**（リアルタイム音声会話）：Realtime APIに対応している必要があります。推奨：*Alibaba Cloud*。
+- **コアAPI**（リアルタイム音声会話）：Realtime APIに対応している必要があります。海外ユーザーへの推奨：*Gemini*。
 - **アシストAPI**（記憶/感情/視覚等）：標準ChatCompletionインターフェースに対応。14以上のプロバイダーが利用可能。
 
 `http://localhost:48911/api_key`にアクセスして、Web画面から直接設定できます。
 
-> *Alibaba Cloud API*の取得：Alibaba CloudのBailian Platform[公式サイト](https://bailian.console.aliyun.com/)でアカウント登録します。新規ユーザーは実名認証後に大量の無料クレジットを取得できます。登録完了後、[コンソール](https://bailian.console.aliyun.com/api-key?tab=model#/api-key)にアクセスしてAPI Keyを取得してください。
+> *Gemini API Key*の取得：[Google AI Studio](https://aistudio.google.com/app/apikey) にアクセスし、GoogleアカウントでログインしてAPIキーを作成してください。海外ユーザーには、Core APIプロバイダーとしてGeminiを推奨します。
 
 #### キャラクター設定の変更
 
@@ -484,17 +484,19 @@ N.E.K.O/
 │   └── 📁 prompts/              # キャラクター、システム、機能プロンプト
 │       ├── prompts_chara.py     # キャラクタープロンプト
 │       └── prompts_sys.py       # システムプロンプト
-├── 📁 main_logic/               # 🔧 コアモジュール
+├── 📁 main_logic/               # 🔧 コアロジックモジュール
 │   ├── core.py                  # コア対話モジュール
 │   ├── cross_server.py          # クロスサーバー通信
-│   ├── omni_realtime_client.py  # リアルタイムAPIクライアント
+│   ├── omni_realtime_client.py  # リアルタイムAPIクライアント（Realtime API）
 │   ├── omni_offline_client.py   # テキストAPIクライアント（ChatCompletion）
-│   └── tts_client.py            # 🔊 TTSエンジンアダプター
-├── 📁 main_routers/             # 🌐 APIルーター（14ルート）
-├── 📁 memory/                   # 🧠 五次元メモリシステム（一部例）
-│   ├── facts/                   # 事実記憶
-│   ├── reflection/              # 反省記憶
-│   └── persona/                 # 人格記憶
+│   ├── 📁 activity/             # システム/ユーザー状態トラッキング
+│   ├── 📁 topic/                # プロアクティブな話題
+│   └── 📁 tts_client/           # 🔊 TTSエンジンアダプター（複数プロバイダー対称）
+├── 📁 main_routers/             # 🌐 APIルーターモジュール（26ルート）
+├── 📁 memory/                   # 🧠 五次元メモリシステム
+│   ├── facts.py                 # 事実記憶
+│   ├── reflection.py            # 反省記憶
+│   └── persona.py               # 人格記憶
 ├── 📁 frontend/                 # 🖥️ モダンフロントエンドプロジェクト
 │   ├── react-neko-chat/         # React チャットウィンドウコンポーネント
 │   └── plugin-manager/          # Vue プラグイン管理ダッシュボード
@@ -502,11 +504,14 @@ N.E.K.O/
 │   ├── sdk/                     # プラグインSDK
 │   └── server/                  # プラグインサーバー
 ├── 📁 static/                   # 🌐 フロントエンド静的リソース（ビルド成果物を含む）
-├── 📁 templates/                # 📄 フロントエンドHTMLテンプレート（14ページ）
+├── 📁 templates/                # 📄 フロントエンドHTMLテンプレート（24ページ）
 ├── 📁 utils/                    # 🛠️ ユーティリティモジュール
-├── main_server.py               # 🌐 メインサーバー
-├── agent_server.py              # 🤖 AIエージェントサーバー
-└── memory_server.py             # 🧠 記憶サーバー
+├── 📁 app/                      # 🚀 サーバーエントリーモジュール
+│   ├── main_server.py           # 🌐 メインサーバー
+│   ├── agent_server.py          # 🤖 AIエージェントサーバー
+│   ├── memory_server.py         # 🧠 記憶サーバー
+│   └── monitor.py               # 📺 独立視聴画面
+└── launcher.py                  # 🎬 ワンクリック起動エントリー（パッケージングエントリー）
 ```
 
 > **AI支援開発**：`.agent/` ディレクトリは Google Antigravity オープン規約に従い、プロジェクトの開発ルールとスキルセットを格納しています。Antigravity のみ自動読み込み、他のAIツール（Claude Code 含む）は手動インポートが必要です。[適応ガイド](https://project-neko.online/contributing/ai-assisted-dev)を参照してください。
@@ -517,15 +522,17 @@ N.E.K.O/
 
 > 完全な開発者ドキュメントは [project-neko.online](https://project-neko.online) をご覧ください
 
+> ホームページのオンボーディングプロンプトの保守メモ：[docs/design/tutorial_prompt_maintenance.zh-CN.md](design/tutorial_prompt_maintenance.zh-CN.md)
+
 ### ロードマップ
 
-v0.7: ✅ Agent関連機能の改善。**完了。**
+v0.7: ✅ Agent関連機能を初期実装。**第一段階は完了。今後の最適化待ち。**
 
-v0.8：記憶関連機能の改善、OpenClaw類似機能の改善。完了予定：2026年3月。
+v0.8：✅ 記憶関連機能とデスクトップペットモードを改善し、複数の2人用ミニゲームを内蔵。**第一段階は完了。今後の最適化待ち。**
 
-v0.9：Linux、スマートフォンを含むマルチシステム対応の改善。猫娘ネットワーク公開。完了予定：2026年4月。
+v0.9：Linux、スマートフォンを含むマルチシステム対応を改善。猫娘ネットワーク公開。2026年7月上旬完了予定。
 
-v1.0：一部モデルプロバイダーへの対応を廃止し、自社大規模モデルとエージェントシステムに注力。完了予定：2026年6月。
+v1.0：一部モデルプロバイダーへの対応を廃止し、自社大規模モデルとエージェントシステムに注力。2026年8月下旬完了予定。
 
 ### テレメトリ (Telemetry)
 
